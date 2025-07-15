@@ -1,0 +1,249 @@
+# SIMPLE kubectl debug - Fix Your Broken Pods
+# Problem: Your pod is broken and you can't figure out why
+# Solution: Use kubectl debug to investigate
+
+# =================== BASIC DEBUG SCENARIOS ===================
+
+# Scenario 1: Pod won't start
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: broken-app
+  template:
+    metadata:
+      labels:
+        app: broken-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:broken-tag  # This will fail
+        ports:
+        - containerPort: 80
+
+---
+# =================== SIMPLE DEBUG COMMANDS ===================
+
+# 1. DEBUG A BROKEN POD
+# kubectl debug <pod-name> -it --image=busybox
+
+# What this does:
+# - Creates a copy of your broken pod
+# - Replaces the container with busybox (working container)
+# - Gives you a shell to investigate
+
+# Example:
+# kubectl debug broken-app-12345 -it --image=busybox
+# Now you can:
+# - Check filesystem: ls -la /
+# - Check network: ping google.com
+# - Check processes: ps aux
+# - Check environment: env
+
+---
+# 2. DEBUG WITH SAME IMAGE
+# kubectl debug <pod-name> -it --image=<same-image> --command -- /bin/sh
+
+# What this does:
+# - Uses the same image as your broken pod
+# - Overrides the command to give you a shell
+# - Useful when the image is good but startup fails
+
+# Example:
+# kubectl debug broken-app-12345 -it --image=nginx:1.21 --command -- /bin/sh
+# Now you can:
+# - Test the actual application
+# - Check configuration files
+# - Run the app manually
+
+---
+# 3. DEBUG A RUNNING POD
+# kubectl debug <pod-name> -it --image=busybox --target=<container-name>
+
+# What this does:
+# - Attaches a debug container to running pod
+# - Shares the same network and filesystem
+# - Doesn't restart the original container
+
+# Example:
+# kubectl debug working-app-67890 -it --image=busybox --target=app
+# Now you can:
+# - Check what the running app sees
+# - Monitor network traffic
+# - Check shared volumes
+
+---
+# 4. DEBUG A NODE
+# kubectl debug node/<node-name> -it --image=busybox
+
+# What this does:
+# - Creates a pod on the specific node
+# - Mounts the node's filesystem
+# - Useful for checking node-level issues
+
+# Example:
+# kubectl debug node/worker-node-1 -it --image=busybox
+# Now you can:
+# - Check node filesystem: ls /host
+# - Check system logs: cat /host/var/log/messages
+# - Check processes: chroot /host ps aux
+
+---
+# =================== SIMPLE DEBUGGING WORKFLOW ===================
+
+# Step 1: Identify the problem
+# kubectl get pods  # Find broken pod
+# kubectl describe pod <pod-name>  # Check events
+# kubectl logs <pod-name>  # Check logs
+
+# Step 2: Choose debug method
+# Pod won't start? → Use debug with working image
+# Pod crashes? → Use debug with same image
+# Pod works but behaves weird? → Debug running pod
+# Node issues? → Debug the node
+
+# Step 3: Investigate
+# Check filesystem, network, processes, config
+# Try to reproduce the issue
+# Test fixes
+
+# Step 4: Fix and test
+# Update your deployment
+# Test the fix
+# Clean up debug pods
+
+---
+# =================== PRACTICAL EXAMPLES ===================
+
+# Example 1: Image pull error
+# Problem: Pod stuck in ImagePullBackOff
+# Debug: kubectl debug broken-pod -it --image=busybox
+# Check: Can you pull the image? Network working?
+# Fix: Correct image name or registry credentials
+
+# Example 2: Application crashes
+# Problem: Pod keeps restarting
+# Debug: kubectl debug broken-pod -it --image=nginx:1.21 --command -- /bin/sh
+# Check: Run the app manually, check config files
+# Fix: Fix configuration or startup script
+
+# Example 3: Network issues
+# Problem: Pod can't reach other services
+# Debug: kubectl debug working-pod -it --image=busybox --target=app
+# Check: ping other-service, nslookup other-service
+# Fix: Service configuration or network policies
+
+# Example 4: Storage problems
+# Problem: Pod can't write to volume
+# Debug: kubectl debug broken-pod -it --image=busybox
+# Check: ls -la /data, touch /data/test
+# Fix: Volume permissions or mount configuration
+
+---
+# =================== DEBUG CONTAINER IMAGES ===================
+
+# Common debug images:
+# busybox    - Basic tools (ls, ping, wget)
+# alpine     - More tools (curl, netstat)
+# ubuntu     - Full Linux tools
+# nicolaka/netshoot - Network debugging tools
+
+# Examples:
+# kubectl debug pod -it --image=busybox       # Basic debugging
+# kubectl debug pod -it --image=alpine        # More tools
+# kubectl debug pod -it --image=nicolaka/netshoot  # Network issues
+
+---
+# =================== SIMPLE COMMANDS INSIDE DEBUG CONTAINER ===================
+
+# Check filesystem:
+# ls -la /
+# find / -name "*.conf"
+# cat /etc/nginx/nginx.conf
+
+# Check network:
+# ping google.com
+# wget http://other-service
+# nslookup other-service
+
+# Check processes:
+# ps aux
+# top
+# pgrep nginx
+
+# Check environment:
+# env
+# echo $PATH
+# whoami
+
+# Check logs:
+# tail -f /var/log/nginx/access.log
+# find /var/log -name "*.log"
+
+---
+# =================== SIMPLE TROUBLESHOOTING ===================
+
+# Debug command fails:
+# Error: image not found
+# Fix: Use correct image name (busybox, alpine, etc.)
+
+# Can't connect to pod:
+# Error: pod not found
+# Fix: kubectl get pods to find correct pod name
+
+# No tools available:
+# Error: command not found
+# Fix: Use different debug image (alpine instead of busybox)
+
+# Permission denied:
+# Error: can't access files
+# Fix: Check if you need to run as root or specific user
+
+---
+# =================== SIMPLE RULES ===================
+
+# 1. Always check basics first
+#    kubectl get pods
+#    kubectl describe pod
+#    kubectl logs pod
+
+# 2. Choose right debug image
+#    busybox: Basic tools
+#    alpine: More tools
+#    nicolaka/netshoot: Network debugging
+
+# 3. Debug running pods carefully
+#    Don't disrupt production
+#    Use --target to specify container
+#    Clean up debug containers
+
+# 4. Document your findings
+#    What you found
+#    How you fixed it
+#    Prevent it in future
+
+---
+# =================== CLEANUP ===================
+
+# Debug creates temporary pods
+# Clean them up when done:
+# kubectl get pods | grep debug
+# kubectl delete pod <debug-pod-name>
+
+# Or delete all debug pods:
+# kubectl delete pods -l debug.kubernetes.io/created-by=kubectl
+
+---
+# =================== THAT'S IT! ===================
+
+# kubectl debug is your best friend for troubleshooting:
+# - Investigate broken pods
+# - Test fixes safely
+# - Debug network issues
+# - Check node problems
+
+# Remember: debug first, then fix!
