@@ -1,0 +1,171 @@
+# Prerequisites for HPA and VPA
+# WHY: Both autoscalers need specific components to function
+# WHAT: This file shows what needs to be installed/configured
+
+# =================== HPA PREREQUISITES ===================
+# HPA is built into Kubernetes but needs metrics-server
+
+# 1. Install metrics-server (if not already installed)
+# kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# 2. For local development (minikube, kind), you might need:
+# minikube addons enable metrics-server
+# OR for kind, metrics-server with --kubelet-insecure-tls flag
+
+# 3. Verify metrics-server is working:
+# kubectl get pods -n kube-system | grep metrics-server
+# kubectl top nodes
+# kubectl top pods
+
+# =================== VPA PREREQUISITES ===================
+# VPA is NOT built into Kubernetes and must be installed separately
+
+# 1. Install VPA (choose ONE method):
+
+# Method A: Using official manifests
+# git clone https://github.com/kubernetes/autoscaler.git
+# cd autoscaler/vertical-pod-autoscaler/
+# ./hack/vpa-install.sh
+
+# Method B: Using Helm
+# helm repo add cowboysysop https://cowboysysop.github.io/charts/
+# helm install vpa cowboysysop/vertical-pod-autoscaler
+
+# Method C: Using this example manifest (basic VPA components)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vpa-system
+
+---
+# VPA Admission Controller
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-admission-controller
+  namespace: vpa-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vpa-admission-controller
+  template:
+    metadata:
+      labels:
+        app: vpa-admission-controller
+    spec:
+      containers:
+      - name: admission-controller
+        image: k8s.gcr.io/autoscaling/vpa-admission-controller:0.13.0
+        resources:
+          requests:
+            cpu: 50m
+            memory: 200Mi
+          limits:
+            cpu: 200m
+            memory: 1000Mi
+        ports:
+        - containerPort: 8000
+
+---
+# VPA Recommender
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-recommender
+  namespace: vpa-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vpa-recommender
+  template:
+    metadata:
+      labels:
+        app: vpa-recommender
+    spec:
+      containers:
+      - name: recommender
+        image: k8s.gcr.io/autoscaling/vpa-recommender:0.13.0
+        resources:
+          requests:
+            cpu: 100m
+            memory: 500Mi
+          limits:
+            cpu: 1000m
+            memory: 1000Mi
+
+---
+# VPA Updater
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-updater
+  namespace: vpa-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vpa-updater
+  template:
+    metadata:
+      labels:
+        app: vpa-updater
+    spec:
+      containers:
+      - name: updater
+        image: k8s.gcr.io/autoscaling/vpa-updater:0.13.0
+        resources:
+          requests:
+            cpu: 100m
+            memory: 500Mi
+          limits:
+            cpu: 1000m
+            memory: 1000Mi
+
+---
+# =================== VERIFICATION COMMANDS ===================
+# 
+# After installation, verify everything works:
+# 
+# For HPA:
+# kubectl get hpa
+# kubectl describe hpa <hpa-name>
+# kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes | jq .
+# 
+# For VPA:
+# kubectl get vpa
+# kubectl describe vpa <vpa-name>
+# kubectl get pods -n vpa-system
+# 
+# =================== COMMON ISSUES ===================
+# 
+# HPA Issues:
+# - "unknown resource type" = metrics-server not installed
+# - "unable to get metrics" = metrics-server not working
+# - "missing resource requests" = deployment needs requests defined
+# 
+# VPA Issues:
+# - "no such resource type" = VPA CRDs not installed
+# - "admission webhook failed" = VPA admission controller not working
+# - pods not getting updated = check updateMode setting
+# 
+# =================== RESOURCE REQUIREMENTS ===================
+# 
+# CRITICAL: Both HPA and VPA require resource requests to be defined
+# 
+# ❌ BAD - No requests defined:
+# resources:
+#   limits:
+#     cpu: 500m
+#     memory: 512Mi
+# 
+# ✅ GOOD - Requests defined:
+# resources:
+#   requests:
+#     cpu: 100m
+#     memory: 128Mi
+#   limits:
+#     cpu: 500m
+#     memory: 512Mi

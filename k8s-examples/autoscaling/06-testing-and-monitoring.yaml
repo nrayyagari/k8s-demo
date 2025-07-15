@@ -1,0 +1,169 @@
+# Testing and Monitoring HPA/VPA
+# WHY: You need to validate autoscaling works and monitor its effectiveness
+# HOW: Use load testing and monitoring commands
+
+# =================== LOAD TESTING SETUP ===================
+# Deploy a test application to generate load
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-test-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-test-app
+  template:
+    metadata:
+      labels:
+        app: load-test-app
+    spec:
+      containers:
+      - name: load-test-app
+        image: nginx:1.21
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        ports:
+        - containerPort: 80
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: load-test-service
+spec:
+  selector:
+    app: load-test-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# HPA for testing
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: load-test-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: load-test-app
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50  # Low threshold for easy testing
+
+---
+# VPA for testing  
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: load-test-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: load-test-app
+  updatePolicy:
+    updateMode: "Off"  # Recommendation only for testing
+  resourcePolicy:
+    containerPolicies:
+    - containerName: load-test-app
+      minAllowed:
+        cpu: 50m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 1Gi
+
+---
+# =================== LOAD GENERATION ===================
+# 
+# Method 1: Using busybox to generate CPU load
+# kubectl run -i --tty load-generator --rm --image=busybox --restart=Never -- /bin/sh
+# 
+# Then inside the container:
+# while true; do wget -q -O- http://load-test-service; done
+# 
+# Method 2: Using Apache Bench (ab)
+# kubectl run load-generator --image=httpd:2.4 --restart=Never -- /bin/sh -c "while true; do ab -n 1000 -c 10 http://load-test-service/; sleep 1; done"
+# 
+# Method 3: Using hey (HTTP load testing tool)
+# kubectl run load-generator --image=williamyeh/hey --restart=Never -- hey -z 10m -c 10 http://load-test-service/
+
+---
+# =================== MONITORING COMMANDS ===================
+# 
+# Real-time monitoring of autoscaling:
+# 
+# 1. Watch HPA status:
+# kubectl get hpa load-test-hpa --watch
+# 
+# 2. Watch pod scaling:
+# kubectl get pods -l app=load-test-app --watch
+# 
+# 3. Monitor resource usage:
+# kubectl top pods -l app=load-test-app
+# kubectl top nodes
+# 
+# 4. Check VPA recommendations:
+# kubectl describe vpa load-test-vpa
+# kubectl get vpa load-test-vpa -o yaml
+# 
+# 5. View HPA events:
+# kubectl describe hpa load-test-hpa
+# 
+# 6. Check scaling events:
+# kubectl get events --sort-by=.metadata.creationTimestamp
+# 
+# =================== EXPECTED BEHAVIOR ===================
+# 
+# HPA Testing:
+# 1. Start with 1 replica
+# 2. Generate load → CPU usage rises above 50%
+# 3. HPA creates more pods (watch with kubectl get pods --watch)
+# 4. Load distributes across pods → CPU usage drops
+# 5. Stop load → HPA waits 300s then scales down
+# 
+# VPA Testing:
+# 1. Deploy with initial resource requests
+# 2. Run workload for several minutes
+# 3. Check VPA recommendations (kubectl describe vpa)
+# 4. Compare recommendations with initial requests
+# 5. Adjust requests based on recommendations
+# 
+# =================== TROUBLESHOOTING ===================
+# 
+# HPA not scaling:
+# - Check: kubectl get hpa (current/target CPU)
+# - Check: kubectl describe hpa (events)
+# - Check: kubectl top pods (actual CPU usage)
+# - Verify: Resource requests are defined
+# 
+# VPA no recommendations:
+# - Check: kubectl get vpa (age should be > 5 minutes)
+# - Check: kubectl describe vpa (events)
+# - Check: VPA components running in vpa-system namespace
+# - Verify: Workload is actually running and using resources
+# 
+# =================== CLEANUP ===================
+# 
+# After testing:
+# kubectl delete deployment load-test-app
+# kubectl delete service load-test-service
+# kubectl delete hpa load-test-hpa
+# kubectl delete vpa load-test-vpa
+# kubectl delete pod load-generator --ignore-not-found
