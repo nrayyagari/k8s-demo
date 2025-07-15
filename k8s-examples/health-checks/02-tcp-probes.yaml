@@ -1,0 +1,399 @@
+# TCP Probes - Port-Based Health Checks
+# WHY: Some applications don't have HTTP endpoints but listen on TCP ports
+# WHEN: Use for databases, TCP services, legacy applications, non-HTTP protocols
+
+# =================== BASIC TCP PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-tcp-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database-tcp-probe
+  template:
+    metadata:
+      labels:
+        app: database-tcp-probe
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "password123"
+        - name: POSTGRES_USER
+          value: "testuser"
+        - name: POSTGRES_DB
+          value: "testdb"
+        
+        # TCP liveness probe - Can we connect to PostgreSQL port?
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 30    # PostgreSQL takes time to start
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # TCP readiness probe - Is PostgreSQL ready to accept connections?
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+          successThreshold: 1
+
+---
+# =================== REDIS TCP PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-tcp-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-tcp-probe
+  template:
+    metadata:
+      labels:
+        app: redis-tcp-probe
+    spec:
+      containers:
+      - name: redis
+        image: redis:6.2
+        ports:
+        - containerPort: 6379
+        
+        # TCP liveness probe for Redis
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # TCP readiness probe for Redis
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+---
+# =================== MULTI-PORT TCP PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-port-tcp-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: multi-port-tcp-service
+  template:
+    metadata:
+      labels:
+        app: multi-port-tcp-service
+    spec:
+      containers:
+      - name: app-server
+        image: nginx:1.21  # In real app, use your multi-port service
+        ports:
+        - containerPort: 8080    # HTTP API port
+        - containerPort: 9090    # Admin port
+        - containerPort: 7070    # Metrics port
+        
+        # Liveness: Check main application port
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness: Check admin port to ensure full initialization
+        readinessProbe:
+          tcpSocket:
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+---
+# =================== TCP PROBE WITH NAMED PORTS ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: named-port-tcp-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: named-port-tcp-service
+  template:
+    metadata:
+      labels:
+        app: named-port-tcp-service
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        ports:
+        - name: http-port
+          containerPort: 8080
+        - name: admin-port
+          containerPort: 9090
+        - name: metrics-port
+          containerPort: 7070
+        
+        # Use named ports in probes
+        livenessProbe:
+          tcpSocket:
+            port: http-port        # Reference by name
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          tcpSocket:
+            port: admin-port       # Reference by name
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+---
+# =================== STATEFUL SET WITH TCP PROBES ===================
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: database-cluster
+spec:
+  serviceName: database-cluster
+  replicas: 3
+  selector:
+    matchLabels:
+      app: database-cluster
+  template:
+    metadata:
+      labels:
+        app: database-cluster
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "clusterpassword"
+        - name: POSTGRES_USER
+          value: "clusteruser"
+        - name: POSTGRES_DB
+          value: "clusterdb"
+        
+        # TCP liveness probe for database cluster
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 60    # Longer for cluster setup
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        # TCP readiness probe for database cluster
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+
+---
+# Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: database-cluster
+spec:
+  selector:
+    app: database-cluster
+  ports:
+  - port: 5432
+    targetPort: 5432
+  clusterIP: None  # Headless service for StatefulSet
+
+---
+# =================== WHEN TO USE TCP PROBES ===================
+
+# ✅ GOOD USE CASES:
+# - Database services (PostgreSQL, MySQL, MongoDB)
+# - Cache services (Redis, Memcached)
+# - Message queues (RabbitMQ, Kafka)
+# - Legacy applications without HTTP endpoints
+# - Services with simple TCP-based protocols
+# - Custom TCP services
+
+# ❌ NOT IDEAL FOR:
+# - HTTP-based applications (use HTTP probes instead)
+# - Services that accept connections but aren't ready
+# - Applications where port open ≠ service ready
+
+# =================== TCP PROBE LIMITATIONS ===================
+
+# 1. Limited information
+#    - Only checks if port is open
+#    - Doesn't verify service functionality
+#    - Can't check application logic
+
+# 2. False positives
+#    - Port may be open but service not ready
+#    - Connection accepted but queries fail
+#    - Process running but not functioning
+
+# 3. No status codes
+#    - Binary success/failure
+#    - No detailed error information
+#    - Harder to debug issues
+
+---
+# =================== MONITORING TCP PROBES ===================
+
+# Check probe status:
+# kubectl describe pod <pod-name>
+# 
+# Look for:
+# Events:
+#   Warning  Unhealthy  1m    kubelet  Liveness probe failed: dial tcp 10.1.1.1:5432: connection refused
+#   Warning  Unhealthy  1m    kubelet  Readiness probe failed: dial tcp 10.1.1.1:5432: connection timeout
+
+# Test TCP connectivity manually:
+# kubectl exec -it <pod-name> -- nc -zv localhost 5432
+# kubectl exec -it <pod-name> -- telnet localhost 5432
+
+# Check if service is accepting connections:
+# kubectl port-forward pod/<pod-name> 5432:5432
+# telnet localhost 5432
+
+---
+# =================== COMBINING TCP WITH OTHER PROBES ===================
+
+# Example: Database with both TCP and exec probes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-combined-probes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database-combined-probes
+  template:
+    metadata:
+      labels:
+        app: database-combined-probes
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "password123"
+        - name: POSTGRES_USER
+          value: "testuser"
+        - name: POSTGRES_DB
+          value: "testdb"
+        
+        # TCP liveness probe - Basic port check
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Exec readiness probe - Actual database query
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U testuser -d testdb
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+---
+# =================== BEST PRACTICES FOR TCP PROBES ===================
+
+# 1. Use for appropriate services
+#    - Database services
+#    - TCP-based applications
+#    - Services without HTTP endpoints
+
+# 2. Configure realistic timeouts
+#    - Account for network latency
+#    - Consider service startup time
+#    - Set appropriate failure thresholds
+
+# 3. Combine with other probe types when needed
+#    - TCP for basic connectivity
+#    - Exec for functionality verification
+#    - HTTP for web services
+
+# 4. Consider service-specific needs
+#    - Database cluster startup times
+#    - Replication lag considerations
+#    - Connection pool behavior
+
+# 5. Monitor probe failures
+#    - Network connectivity issues
+#    - Service binding problems
+#    - Resource exhaustion
+
+---
+# =================== COMMON TCP PROBE ISSUES ===================
+
+# ❌ Wrong port number
+# tcpSocket:
+#   port: 5432  # App actually runs on 3306!
+
+# ❌ Too short initialDelaySeconds
+# initialDelaySeconds: 5  # Database needs 30s to start
+
+# ❌ Too aggressive failure threshold
+# failureThreshold: 1  # One network blip kills the pod
+
+# ❌ Using TCP probe for HTTP services
+# Should use HTTP probe instead for better information
+
+# ✅ CORRECT APPROACH:
+# - Use correct port numbers
+# - Appropriate startup delays
+# - Reasonable failure thresholds
+# - Right probe type for service type
+# - Combine with other probes when needed

@@ -1,0 +1,315 @@
+# HTTP Probes - Most Common Health Check Method
+# WHY: HTTP is the natural protocol for web applications and APIs
+# WHEN: Use for web servers, REST APIs, microservices with HTTP endpoints
+
+# =================== BASIC HTTP PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app-basic
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app-basic
+  template:
+    metadata:
+      labels:
+        app: web-app-basic
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        
+        # Basic HTTP liveness probe
+        livenessProbe:
+          httpGet:
+            path: /               # Root path
+            port: 80              # Container port
+            scheme: HTTP          # HTTP or HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # Basic HTTP readiness probe
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+          successThreshold: 1
+
+---
+# =================== CUSTOM HEALTH ENDPOINT ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-with-health-endpoint
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-with-health-endpoint
+  template:
+    metadata:
+      labels:
+        app: api-with-health-endpoint
+    spec:
+      containers:
+      - name: api-server
+        image: nginx:1.21  # In real app, use your API image
+        ports:
+        - containerPort: 8080
+        
+        # Liveness: Simple ping endpoint
+        livenessProbe:
+          httpGet:
+            path: /health/live     # Lightweight liveness check
+            port: 8080
+            httpHeaders:
+            - name: Custom-Header
+              value: "liveness-check"
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness: Full health check including dependencies
+        readinessProbe:
+          httpGet:
+            path: /health/ready    # Comprehensive readiness check
+            port: 8080
+            httpHeaders:
+            - name: Custom-Header
+              value: "readiness-check"
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 10       # Longer timeout for dependency checks
+          failureThreshold: 2
+          successThreshold: 1
+
+---
+# =================== HTTPS PROBE WITH AUTHENTICATION ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-web-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: secure-web-app
+  template:
+    metadata:
+      labels:
+        app: secure-web-app
+    spec:
+      containers:
+      - name: secure-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 443
+        
+        # HTTPS liveness probe
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 443
+            scheme: HTTPS          # Use HTTPS
+            httpHeaders:
+            - name: Authorization
+              value: "Bearer health-check-token"
+            - name: User-Agent
+              value: "k8s-liveness-probe"
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        # HTTPS readiness probe
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 443
+            scheme: HTTPS
+            httpHeaders:
+            - name: Authorization
+              value: "Bearer health-check-token"
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 8
+          failureThreshold: 2
+
+---
+# =================== MULTI-CONTAINER POD WITH DIFFERENT PROBES ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-container-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: multi-container-app
+  template:
+    metadata:
+      labels:
+        app: multi-container-app
+    spec:
+      containers:
+      # Frontend container
+      - name: frontend
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      
+      # Backend API container
+      - name: backend
+        image: nginx:1.21  # In real app, use your API image
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
+---
+# =================== EXAMPLE HEALTH ENDPOINT IMPLEMENTATIONS ===================
+
+# Example /health/live endpoint (lightweight):
+# GET /health/live
+# Response: 200 OK
+# Body: {"status": "alive", "timestamp": "2024-01-15T10:30:00Z"}
+# 
+# What it checks:
+# - Process is running
+# - Can handle HTTP requests
+# - Basic memory/CPU not exhausted
+
+# Example /health/ready endpoint (comprehensive):
+# GET /health/ready  
+# Response: 200 OK (ready) or 503 Service Unavailable (not ready)
+# Body: {
+#   "status": "ready",
+#   "checks": {
+#     "database": "ok",
+#     "cache": "ok", 
+#     "external_api": "ok"
+#   },
+#   "timestamp": "2024-01-15T10:30:00Z"
+# }
+# 
+# What it checks:
+# - Database connectivity
+# - Cache availability
+# - External service dependencies
+# - Application fully initialized
+
+---
+# =================== MONITORING HTTP PROBES ===================
+
+# Check probe failures:
+# kubectl describe pod <pod-name>
+# 
+# Look for:
+# Events:
+#   Warning  Unhealthy  1m    kubelet  Liveness probe failed: HTTP probe failed with statuscode: 500
+#   Warning  Unhealthy  1m    kubelet  Readiness probe failed: HTTP probe failed with statuscode: 503
+
+# Check HTTP probe details:
+# kubectl get events --field-selector involvedObject.name=<pod-name>
+
+# Test probe endpoints manually:
+# kubectl port-forward pod/<pod-name> 8080:8080
+# curl http://localhost:8080/health/live
+# curl http://localhost:8080/health/ready
+
+---
+# =================== BEST PRACTICES FOR HTTP PROBES ===================
+
+# 1. Create dedicated health endpoints
+#    - /health/live: Basic liveness check
+#    - /health/ready: Comprehensive readiness check
+#    - Keep them lightweight and fast
+
+# 2. Use appropriate HTTP status codes
+#    - 200-399: Success
+#    - 400-599: Failure
+#    - Avoid redirects for health checks
+
+# 3. Include meaningful response bodies
+#    - JSON with status details
+#    - Timestamp for debugging
+#    - Individual check results
+
+# 4. Configure timeouts appropriately
+#    - Liveness: Short timeout (< 5s)
+#    - Readiness: Longer timeout for dependency checks (< 10s)
+
+# 5. Handle authentication carefully
+#    - Use dedicated health check tokens
+#    - Avoid complex authentication for liveness
+#    - Consider IP-based restrictions
+
+# 6. Monitor probe performance
+#    - Health endpoints should be fast (< 1s)
+#    - Avoid expensive operations in liveness checks
+#    - Cache dependency status for readiness checks
+
+---
+# =================== COMMON HTTP PROBE ISSUES ===================
+
+# ❌ Using wrong port
+# livenessProbe:
+#   httpGet:
+#     port: 8080  # App runs on 3000!
+
+# ❌ Health endpoint too slow
+# GET /health takes 5 seconds to respond due to database query
+
+# ❌ Authentication blocking health checks
+# Health endpoint requires complex OAuth token
+
+# ❌ No difference between liveness and readiness
+# Both check the same heavy endpoint
+
+# ❌ Health endpoint not implemented
+# Returns 404 for /health path
+
+# ✅ CORRECT APPROACH:
+# - Dedicated lightweight health endpoints
+# - Proper port configuration
+# - Fast response times
+# - Different checks for liveness vs readiness
+# - Simple or no authentication for health checks

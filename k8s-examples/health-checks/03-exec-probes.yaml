@@ -1,0 +1,556 @@
+# Exec Probes - Command-Based Health Checks
+# WHY: Run custom commands inside containers for complex health checks
+# WHEN: Use for custom logic, file checks, process verification, application-specific tests
+
+# =================== BASIC EXEC PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-based-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: file-based-app
+  template:
+    metadata:
+      labels:
+        app: file-based-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        
+        # Exec liveness probe - Check if nginx process is running
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "pgrep nginx"
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # Exec readiness probe - Check if app is ready by file existence
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "test -f /tmp/ready"
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+          successThreshold: 1
+        
+        # Lifecycle hook to create ready file
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "sleep 10 && touch /tmp/ready"
+
+---
+# =================== DATABASE EXEC PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exec-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-exec-probe
+  template:
+    metadata:
+      labels:
+        app: postgres-exec-probe
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "password123"
+        - name: POSTGRES_USER
+          value: "testuser"
+        - name: POSTGRES_DB
+          value: "testdb"
+        
+        # Exec liveness probe - Check if PostgreSQL process is alive
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "pg_isready -U testuser -d testdb"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Exec readiness probe - Actual database query
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c  
+            - "psql -U testuser -d testdb -c 'SELECT 1;' > /dev/null 2>&1"
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 10
+          failureThreshold: 2
+
+---
+# =================== CUSTOM APPLICATION EXEC PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: custom-app-exec-probe
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: custom-app-exec-probe
+  template:
+    metadata:
+      labels:
+        app: custom-app-exec-probe
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21  # In real app, use your application image
+        
+        # Exec liveness probe - Custom script
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Check if process is running and not stuck
+              if pgrep -f "nginx" > /dev/null; then
+                # Check if process is responsive (not hanging)
+                if [ -f /tmp/hung_process ]; then
+                  echo "Process is hung"
+                  exit 1
+                fi
+                echo "Process is alive and responsive"
+                exit 0
+              else
+                echo "Process not found"
+                exit 1
+              fi
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Exec readiness probe - Check all dependencies
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Check if application is fully initialized
+              if [ ! -f /tmp/app_initialized ]; then
+                echo "App not initialized"
+                exit 1
+              fi
+              
+              # Check if configuration is loaded
+              if [ ! -f /etc/app/config.json ]; then
+                echo "Config not loaded"
+                exit 1
+              fi
+              
+              # Check if external dependencies are available
+              if ! nc -z external-service 80 2>/dev/null; then
+                echo "External service not available"
+                exit 1
+              fi
+              
+              echo "All checks passed"
+              exit 0
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 10
+          failureThreshold: 2
+
+---
+# =================== REDIS EXEC PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exec-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-exec-probe
+  template:
+    metadata:
+      labels:
+        app: redis-exec-probe
+    spec:
+      containers:
+      - name: redis
+        image: redis:6.2
+        ports:
+        - containerPort: 6379
+        
+        # Exec liveness probe - Redis ping command
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Exec readiness probe - Test Redis functionality
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Test basic Redis operations
+              redis-cli set health_check "$(date)" > /dev/null &&
+              redis-cli get health_check > /dev/null &&
+              redis-cli del health_check > /dev/null
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+---
+# =================== MULTI-COMMAND EXEC PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-check-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: multi-check-app
+  template:
+    metadata:
+      labels:
+        app: multi-check-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        
+        # Exec liveness probe - Multiple checks
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Check 1: Process running
+              if ! pgrep nginx > /dev/null; then
+                echo "Nginx process not found"
+                exit 1
+              fi
+              
+              # Check 2: Memory usage reasonable
+              memory_usage=$(ps -o pid,vsz,rss,comm -p $(pgrep nginx | head -1) | tail -1 | awk '{print $3}')
+              if [ "$memory_usage" -gt 100000 ]; then
+                echo "Memory usage too high: ${memory_usage}KB"
+                exit 1
+              fi
+              
+              # Check 3: No error files
+              if [ -f /tmp/error.log ]; then
+                echo "Error file exists"
+                exit 1
+              fi
+              
+              echo "All liveness checks passed"
+              exit 0
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        # Exec readiness probe - Comprehensive readiness check
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Check 1: Service is listening
+              if ! netstat -ln | grep ':80 ' > /dev/null; then
+                echo "Service not listening on port 80"
+                exit 1
+              fi
+              
+              # Check 2: Config file exists and is valid
+              if [ ! -f /etc/nginx/nginx.conf ]; then
+                echo "Config file missing"
+                exit 1
+              fi
+              
+              # Check 3: Test configuration
+              if ! nginx -t > /dev/null 2>&1; then
+                echo "Config test failed"
+                exit 1
+              fi
+              
+              # Check 4: Disk space available
+              disk_usage=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              if [ "$disk_usage" -gt 90 ]; then
+                echo "Disk usage too high: ${disk_usage}%"
+                exit 1
+              fi
+              
+              echo "All readiness checks passed"
+              exit 0
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 15
+          failureThreshold: 2
+
+---
+# =================== EXEC PROBE WITH SCRIPT FILE ===================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: health-check-scripts
+data:
+  liveness.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Starting liveness check..."
+    
+    # Check if main process is running
+    if ! pgrep -f "nginx: master process" > /dev/null; then
+        echo "ERROR: Main process not found"
+        exit 1
+    fi
+    
+    # Check if process is responsive
+    if [ -f /tmp/process_hung ]; then
+        echo "ERROR: Process appears to be hung"
+        exit 1
+    fi
+    
+    echo "SUCCESS: Liveness check passed"
+    exit 0
+  
+  readiness.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Starting readiness check..."
+    
+    # Check if initialization is complete
+    if [ ! -f /tmp/init_complete ]; then
+        echo "ERROR: Initialization not complete"
+        exit 1
+    fi
+    
+    # Check external dependencies
+    if ! nc -z database-service 5432 2>/dev/null; then
+        echo "ERROR: Database not available"
+        exit 1
+    fi
+    
+    if ! nc -z cache-service 6379 2>/dev/null; then
+        echo "ERROR: Cache not available"  
+        exit 1
+    fi
+    
+    echo "SUCCESS: Readiness check passed"
+    exit 0
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: script-based-probes
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: script-based-probes
+  template:
+    metadata:
+      labels:
+        app: script-based-probes
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        
+        # Mount the health check scripts
+        volumeMounts:
+        - name: health-scripts
+          mountPath: /health-scripts
+        
+        # Exec liveness probe using script
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - /health-scripts/liveness.sh
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        # Exec readiness probe using script
+        readinessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - /health-scripts/readiness.sh
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 15
+          failureThreshold: 2
+        
+        # Simulate initialization
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "sleep 15 && touch /tmp/init_complete"
+      
+      volumes:
+      - name: health-scripts
+        configMap:
+          name: health-check-scripts
+          defaultMode: 0755
+
+---
+# =================== BEST PRACTICES FOR EXEC PROBES ===================
+
+# 1. Keep commands simple and fast
+#    - Avoid complex logic in probe commands
+#    - Use dedicated scripts for complex checks
+#    - Minimize external dependencies
+
+# 2. Use appropriate exit codes
+#    - Exit 0: Success
+#    - Exit 1 (or any non-zero): Failure
+#    - Be consistent with error handling
+
+# 3. Handle timeouts gracefully
+#    - Set realistic timeout values
+#    - Avoid long-running operations
+#    - Use timeout command for external calls
+
+# 4. Make probes idempotent
+#    - Probes should not modify system state
+#    - Multiple runs should give same result
+#    - Avoid side effects
+
+# 5. Log appropriately
+#    - Use stdout for success messages
+#    - Use stderr for error messages
+#    - Include relevant debugging information
+
+---
+# =================== COMMON EXEC PROBE ISSUES ===================
+
+# ❌ Command not found
+# exec:
+#   command: ["my-custom-command"]  # Not in PATH!
+
+# ❌ Timeout too short
+# timeoutSeconds: 1  # Complex check needs more time
+
+# ❌ Command has side effects
+# exec:
+#   command: ["rm", "/tmp/cache"]  # Modifies system state!
+
+# ❌ Command never fails
+# exec:
+#   command: ["true"]  # Always succeeds
+
+# ❌ Complex logic in command
+# exec:
+#   command: ["bash", "-c", "very long complex script..."]
+
+# ✅ CORRECT APPROACH:
+# - Use simple, focused commands
+# - Appropriate timeouts
+# - No side effects
+# - Proper error handling
+# - Dedicated scripts for complex logic
+
+---
+# =================== MONITORING EXEC PROBES ===================
+
+# Check probe failures:
+# kubectl describe pod <pod-name>
+# 
+# Look for:
+# Events:
+#   Warning  Unhealthy  1m    kubelet  Liveness probe failed: command "sh -c pgrep nginx" failed with exit code 1
+#   Warning  Unhealthy  1m    kubelet  Readiness probe failed: command "sh -c test -f /tmp/ready" failed with exit code 1
+
+# Debug probe commands:
+# kubectl exec -it <pod-name> -- sh -c "pgrep nginx"
+# kubectl exec -it <pod-name> -- sh -c "test -f /tmp/ready"
+
+# Check probe logs:
+# kubectl logs <pod-name> -c <container-name>
+
+---
+# =================== WHEN TO USE EXEC PROBES ===================
+
+# ✅ GOOD USE CASES:
+# - Custom application health checks
+# - File-based readiness indicators
+# - Process verification
+# - Complex dependency checks
+# - Legacy applications without HTTP endpoints
+# - Database-specific health checks
+
+# ❌ AVOID FOR:
+# - Simple HTTP services (use HTTP probes)
+# - Basic port checks (use TCP probes)
+# - Expensive operations
+# - Commands that modify state
+# - Non-idempotent operations
+
+# =================== PERFORMANCE CONSIDERATIONS ===================
+
+# Exec probes are more expensive than HTTP/TCP probes:
+# - Fork/exec overhead
+# - Shell processing
+# - Command execution time
+# - Resource usage
+
+# Optimize by:
+# - Using simple commands
+# - Avoiding shell when possible
+# - Caching results where appropriate
+# - Setting appropriate intervals

@@ -1,0 +1,486 @@
+# Startup Probes - Protecting Slow-Starting Applications
+# WHY: Some applications take a long time to start up
+# WHAT: Startup probes prevent liveness probes from killing slow-starting containers
+# WHEN: Use for legacy apps, databases, or applications with long initialization
+
+# =================== THE PROBLEM WITHOUT STARTUP PROBES ===================
+
+# Without startup probes:
+# 1. Container starts
+# 2. Liveness probe begins after initialDelaySeconds (e.g., 30s)
+# 3. App still starting up → liveness probe fails
+# 4. Kubernetes restarts container → Never gets chance to fully start!
+
+# =================== BASIC STARTUP PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slow-starting-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: slow-starting-app
+  template:
+    metadata:
+      labels:
+        app: slow-starting-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        
+        # Startup probe - Runs first, until it succeeds
+        startupProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30        # 30 * 5s = 150s max startup time
+          successThreshold: 1
+        
+        # Liveness probe - Only starts AFTER startup probe succeeds
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 0      # No delay needed, startup probe handles it
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness probe - Also starts after startup probe succeeds  
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+---
+# =================== DATABASE WITH STARTUP PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-slow-start
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database-slow-start
+  template:
+    metadata:
+      labels:
+        app: database-slow-start
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "password123"
+        - name: POSTGRES_USER
+          value: "testuser"
+        - name: POSTGRES_DB
+          value: "testdb"
+        
+        # Startup probe - Database initialization can take time
+        startupProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U testuser -d testdb
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 18        # 18 * 10s = 180s max startup time
+          successThreshold: 1
+        
+        # Liveness probe - Simple check after startup
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U testuser -d testdb
+          initialDelaySeconds: 0
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        # Readiness probe - Can handle queries
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - psql -U testuser -d testdb -c 'SELECT 1;' > /dev/null 2>&1
+          initialDelaySeconds: 0
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+
+---
+# =================== LEGACY APPLICATION WITH STARTUP PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-app-slow-start
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: legacy-app-slow-start
+  template:
+    metadata:
+      labels:
+        app: legacy-app-slow-start
+    spec:
+      containers:
+      - name: legacy-app
+        image: nginx:1.21  # Replace with your legacy app image
+        
+        # Startup probe - Legacy app takes 5 minutes to start
+        startupProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Check if legacy app has finished initialization
+              if [ -f /opt/app/initialized ]; then
+                echo "Application initialized"
+                exit 0
+              else
+                echo "Application still starting..."
+                exit 1
+              fi
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 20        # 20 * 15s = 300s (5 minutes) max startup
+          successThreshold: 1
+        
+        # Liveness probe - Check if app is still running
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pgrep -f "legacy-app-process"
+          initialDelaySeconds: 0
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        # Readiness probe - Check if app can handle requests
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+        
+        # Simulate legacy app initialization
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                # Simulate slow initialization process
+                sleep 120
+                touch /opt/app/initialized
+                echo "Legacy app initialization complete"
+
+---
+# =================== JAVA APPLICATION WITH STARTUP PROBE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-app-slow-start
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: java-app-slow-start
+  template:
+    metadata:
+      labels:
+        app: java-app-slow-start
+    spec:
+      containers:
+      - name: java-app
+        image: openjdk:11-jre-slim
+        command: ["java", "-jar", "/app/myapp.jar"]
+        ports:
+        - containerPort: 8080
+        
+        # Startup probe - Java apps can take time to start
+        startupProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 45     # JVM startup time
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 30        # 30 * 10s = 300s max startup
+          successThreshold: 1
+        
+        # Liveness probe - Check if JVM is healthy
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness probe - Check if app can handle traffic
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+---
+# =================== MICROSERVICE WITH DEPENDENCIES ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microservice-with-deps
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: microservice-with-deps
+  template:
+    metadata:
+      labels:
+        app: microservice-with-deps
+    spec:
+      containers:
+      - name: microservice
+        image: nginx:1.21  # Replace with your microservice image
+        ports:
+        - containerPort: 8080
+        
+        # Startup probe - Wait for all dependencies to be ready
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 10
+          failureThreshold: 24        # 24 * 5s = 120s for dependency startup
+          successThreshold: 1
+        
+        # Liveness probe - Basic health check
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness probe - Ready for traffic
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+---
+# =================== STARTUP PROBE CONFIGURATION OPTIONS ===================
+
+# All probe configuration options available for startup probes:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: startup-probe-config-example
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: startup-probe-config-example
+  template:
+    metadata:
+      labels:
+        app: startup-probe-config-example
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        
+        # Comprehensive startup probe configuration
+        startupProbe:
+          # Probe type (choose one)
+          httpGet:
+            path: /startup
+            port: 8080
+            scheme: HTTP
+            httpHeaders:
+            - name: Custom-Header
+              value: "startup-check"
+          
+          # OR use tcpSocket:
+          # tcpSocket:
+          #   port: 8080
+          
+          # OR use exec:
+          # exec:
+          #   command:
+          #   - /bin/sh
+          #   - -c
+          #   - "startup-check-command"
+          
+          # Timing configuration
+          initialDelaySeconds: 30     # Wait before first probe
+          periodSeconds: 10           # Time between probes
+          timeoutSeconds: 5           # Max time to wait for response
+          
+          # Failure handling
+          failureThreshold: 30        # Max failures before giving up
+          successThreshold: 1         # Consecutive successes needed
+          
+          # Total max startup time = failureThreshold * periodSeconds
+          # In this case: 30 * 10s = 300s (5 minutes) maximum
+
+---
+# =================== BEST PRACTICES FOR STARTUP PROBES ===================
+
+# 1. Calculate maximum startup time
+#    maxStartupTime = failureThreshold * periodSeconds
+#    Set this longer than your actual startup time
+
+# 2. Use appropriate probe types
+#    - HTTP: For web services with startup endpoints
+#    - TCP: For simple port availability checks
+#    - Exec: For complex startup logic
+
+# 3. Set reasonable failure thresholds
+#    - Too low: Premature failures
+#    - Too high: Slow failure detection
+#    - Typical: 20-30 failures for slow apps
+
+# 4. Choose appropriate periods
+#    - Too frequent: Resource overhead
+#    - Too infrequent: Slow startup detection
+#    - Typical: 5-10 seconds for most apps
+
+# 5. Disable other probe delays
+#    - Set initialDelaySeconds: 0 for liveness/readiness
+#    - Startup probe handles the initial delay
+
+---
+# =================== STARTUP PROBE LIFECYCLE ===================
+
+# 1. Container starts
+# 2. Kubernetes waits initialDelaySeconds
+# 3. Startup probe begins running every periodSeconds
+# 4. Liveness and readiness probes are DISABLED
+# 5. If startup probe fails failureThreshold times:
+#    - Container is restarted
+#    - Process starts over
+# 6. When startup probe succeeds:
+#    - Startup probe stops running
+#    - Liveness and readiness probes are ENABLED
+#    - Normal probe lifecycle begins
+
+---
+# =================== MONITORING STARTUP PROBES ===================
+
+# Check startup probe status:
+# kubectl describe pod <pod-name>
+# 
+# Look for:
+# Events:
+#   Normal   Started    2m    kubelet  Started container app
+#   Warning  Unhealthy  1m    kubelet  Startup probe failed: HTTP probe failed with statuscode: 503
+#   Normal   Ready      30s   kubelet  Startup probe succeeded
+
+# Monitor startup progress:
+# kubectl get pods -w
+# 
+# Watch for:
+# NAME                          READY   STATUS    RESTARTS   AGE
+# slow-app-123                  0/1     Running   0          30s
+# slow-app-123                  1/1     Running   0          2m30s
+#                               ↑ Changes from 0/1 to 1/1 when startup probe succeeds
+
+---
+# =================== TROUBLESHOOTING STARTUP PROBES ===================
+
+# Startup probe keeps failing:
+# 1. Check if failureThreshold * periodSeconds is long enough
+# 2. Verify probe endpoint/command is correct
+# 3. Check application logs for startup issues
+# 4. Test probe manually inside container
+
+# Container keeps restarting:
+# 1. Check if startup probe is properly configured
+# 2. Verify application actually starts successfully
+# 3. Check resource limits (CPU/memory)
+# 4. Review container logs for startup errors
+
+# Startup probe takes too long:
+# 1. Optimize application startup process
+# 2. Use more efficient probe checks
+# 3. Adjust periodSeconds if appropriate
+# 4. Consider if app architecture needs improvement
+
+---
+# =================== WHEN TO USE STARTUP PROBES ===================
+
+# ✅ USE STARTUP PROBES FOR:
+# - Legacy applications with slow startup
+# - Database initialization
+# - Java applications with long JVM startup
+# - Applications that download/process data on start
+# - Microservices with many dependencies
+# - Applications with complex initialization logic
+
+# ❌ DON'T USE FOR:
+# - Fast-starting applications (< 30s)
+# - Stateless applications with quick startup
+# - Applications where liveness probe delay is sufficient
+# - Simple applications without complex dependencies
+
+# =================== STARTUP PROBE VS LIVENESS PROBE DELAY ===================
+
+# Without startup probe:
+# livenessProbe:
+#   initialDelaySeconds: 300  # Wait 5 minutes before checking
+#   # Problem: If app crashes after starting, takes 5 minutes to detect
+
+# With startup probe:
+# startupProbe:
+#   failureThreshold: 30      # Allow 5 minutes for startup
+#   periodSeconds: 10
+# livenessProbe:
+#   initialDelaySeconds: 0    # Check immediately after startup
+#   # Benefit: Fast failure detection after startup, but patient during startup

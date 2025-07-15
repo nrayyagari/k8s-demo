@@ -1,0 +1,225 @@
+# Understanding Kubernetes Health Probes
+# WHY: Kubernetes needs to know if your application is actually healthy
+# WHAT: Three types of probes that serve different purposes
+
+# =================== THE PROBLEM WITHOUT PROBES ===================
+# 
+# Scenario: Web application deployment
+# - Pod status: Running ✅
+# - Container status: Running ✅  
+# - Application status: Crashed/Hanging ❌
+# - Kubernetes action: Keeps sending traffic to broken pod!
+# 
+# Result: Users get errors, application appears broken
+
+# =================== THE THREE TYPES OF PROBES ===================
+
+# 1. LIVENESS PROBE
+# PURPOSE: "Is the application alive?"
+# ACTION: Restart container if probe fails
+# WHEN TO USE: Detect deadlocks, memory leaks, infinite loops
+# EXAMPLE: Application hangs but process still exists
+
+# 2. READINESS PROBE  
+# PURPOSE: "Is the application ready for traffic?"
+# ACTION: Remove pod from service endpoints if probe fails
+# WHEN TO USE: Application startup, dependency checks, graceful shutdown
+# EXAMPLE: Database not connected yet, still starting up
+
+# 3. STARTUP PROBE (Kubernetes 1.16+)
+# PURPOSE: "Has the application finished starting?"
+# ACTION: Disables liveness/readiness until startup completes
+# WHEN TO USE: Slow-starting applications, legacy applications
+# EXAMPLE: Application takes 2 minutes to initialize
+
+# =================== PROBE TYPES AND METHODS ===================
+
+# HTTP GET Probe
+# - Sends HTTP GET request to specified path
+# - Success: HTTP status 200-399
+# - Use for: Web applications, REST APIs, health endpoints
+
+# TCP Socket Probe  
+# - Attempts to connect to specified port
+# - Success: Connection established
+# - Use for: Databases, TCP services, when no HTTP endpoint
+
+# Exec Probe
+# - Runs command inside container
+# - Success: Command exits with code 0
+# - Use for: Custom health checks, file existence, process checks
+
+# =================== BASIC EXAMPLE WITHOUT PROBES ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: no-probes-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: no-probes-app
+  template:
+    metadata:
+      labels:
+        app: no-probes-app
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        # NO PROBES = Kubernetes doesn't know if app is healthy!
+
+---
+# =================== BASIC EXAMPLE WITH PROBES ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: with-probes-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: with-probes-app
+  template:
+    metadata:
+      labels:
+        app: with-probes-app
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        
+        # LIVENESS PROBE: Restart if nginx stops responding
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10    # Wait 10s after container starts
+          periodSeconds: 10          # Check every 10s
+          timeoutSeconds: 5          # Timeout after 5s
+          failureThreshold: 3        # Fail after 3 consecutive failures
+          successThreshold: 1        # Success after 1 success
+        
+        # READINESS PROBE: Remove from service if not ready
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5     # Start checking after 5s
+          periodSeconds: 5           # Check every 5s
+          timeoutSeconds: 3          # Timeout after 3s
+          failureThreshold: 2        # Fail after 2 consecutive failures
+          successThreshold: 1        # Success after 1 success
+
+---
+# =================== WHAT HAPPENS WITH EACH PROBE ===================
+
+# LIVENESS PROBE FAILURE:
+# 1. Probe fails 3 times (failureThreshold)
+# 2. Kubernetes restarts the container
+# 3. Pod gets new container with fresh start
+# 4. Events: "Container was killed" → "Container started"
+# 5. Traffic may be briefly interrupted
+
+# READINESS PROBE FAILURE:
+# 1. Probe fails 2 times (failureThreshold)
+# 2. Pod marked as "Not Ready"
+# 3. Pod removed from service endpoints
+# 4. No traffic sent to this pod
+# 5. Container keeps running (not restarted)
+# 6. When probe succeeds, pod added back to service
+
+# STARTUP PROBE BEHAVIOR:
+# 1. Startup probe runs until it succeeds
+# 2. Liveness and readiness probes are disabled
+# 3. Once startup probe succeeds, other probes activate
+# 4. Prevents premature restart of slow-starting apps
+
+---
+# =================== MONITORING PROBE STATUS ===================
+
+# Check pod events for probe failures:
+# kubectl describe pod <pod-name>
+# 
+# Look for events like:
+# Warning  Unhealthy  1m    kubelet  Liveness probe failed: Get http://10.1.1.1:80/: dial tcp 10.1.1.1:80: connection refused
+# Warning  Unhealthy  1m    kubelet  Readiness probe failed: Get http://10.1.1.1:80/health: HTTP 503
+# Normal   Killing    1m    kubelet  Container web-app failed liveness probe, will be restarted
+
+# Check service endpoints:
+# kubectl get endpoints <service-name>
+# 
+# Endpoints show only "Ready" pods:
+# NAME      ENDPOINTS                    AGE
+# my-app    10.1.1.1:80,10.1.1.2:80    5m
+#           ↑ Only pods passing readiness probe
+
+# Monitor probe metrics:
+# kubectl top pods  # Shows restarts due to liveness failures
+# kubectl get pods  # READY column shows readiness status
+
+---
+# =================== BEST PRACTICES ===================
+
+# 1. ALWAYS use readiness probes for production
+#    - Prevents traffic to unhealthy pods
+#    - Enables zero-downtime deployments
+#    - Essential for load balancing
+
+# 2. Use liveness probes carefully
+#    - Only when you're confident about restart behavior
+#    - Not for temporary failures (use readiness instead)
+#    - Avoid for stateful applications that lose data on restart
+
+# 3. Configure appropriate timeouts
+#    - initialDelaySeconds: Longer than startup time
+#    - periodSeconds: Balance between responsiveness and resource usage
+#    - timeoutSeconds: Longer than expected response time
+#    - failureThreshold: Higher for production stability
+
+# 4. Test probe endpoints
+#    - Create dedicated health check endpoints
+#    - Make them lightweight and fast
+#    - Check actual application functionality, not just process existence
+
+# 5. Monitor probe behavior
+#    - Watch for frequent restarts (liveness issues)
+#    - Check service endpoints (readiness issues)
+#    - Review pod events for probe failures
+
+---
+# =================== COMMON MISTAKES ===================
+
+# ❌ Using liveness probe for temporary failures
+# livenessProbe:
+#   httpGet:
+#     path: /database-status  # Will restart pod if DB is down!
+
+# ✅ Use readiness probe for dependencies
+# readinessProbe:
+#   httpGet:
+#     path: /database-status  # Removes from service if DB is down
+
+# ❌ Probe endpoint is too expensive
+# livenessProbe:
+#   httpGet:
+#     path: /full-health-check  # Heavy database queries every 10s!
+
+# ✅ Lightweight probe endpoint
+# livenessProbe:
+#   httpGet:
+#     path: /ping  # Simple "I'm alive" check
+
+# ❌ initialDelaySeconds too short
+# livenessProbe:
+#   initialDelaySeconds: 1  # App needs 30s to start!
+
+# ✅ Appropriate startup time
+# livenessProbe:
+#   initialDelaySeconds: 45  # Longer than actual startup time
