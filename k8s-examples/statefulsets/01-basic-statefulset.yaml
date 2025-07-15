@@ -1,0 +1,38 @@
+# Basic StatefulSet Example
+# Creates pods with predictable names: web-0, web-1, web-2
+# Each pod gets unique identity and DNS name
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web-stateful
+spec:
+  serviceName: web-headless    # Required: points to headless service
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-stateful
+  template:
+    metadata:
+      labels:
+        app: web-stateful
+    spec:
+      containers:
+      - name: web
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        command: ["/bin/sh"]
+        args: ["-c", "echo '<h1>I am Pod: $HOSTNAME</h1>' > /usr/share/nginx/html/index.html && nginx -g 'daemon off;'"]
+---
+# Headless Service - Required for StatefulSet
+# No cluster IP, each pod gets individual DNS name
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-headless
+spec:
+  clusterIP: None    # Makes it headless
+  selector:
+    app: web-stateful
+  ports:
+  - port: 80

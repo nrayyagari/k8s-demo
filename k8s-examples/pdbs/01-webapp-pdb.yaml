@@ -1,0 +1,18 @@
+# Pod Disruption Budget (PDB) Example
+# Ensures minimum 3 pods remain available during voluntary disruptions
+# Protects against node maintenance, cluster upgrades, rolling updates
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: webapp-pdb
+spec:
+  minAvailable: 3        # Keep at least 3 pods running
+  # Alternative: maxUnavailable: 2  # Allow max 2 pods to be unavailable
+  selector:
+    matchLabels:
+      app: webapp
+      
+# Usage scenarios:
+# - Node drain: PDB prevents draining too many pods at once
+# - Rolling updates: PDB ensures availability during updates
+# - Cluster maintenance: PDB maintains service availability

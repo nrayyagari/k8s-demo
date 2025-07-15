@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: data-demo
+spec:
+  serviceName: data-demo-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: data-demo
+  template:
+    metadata:
+      labels:
+        app: data-demo
+    spec:
+      containers:
+      - name: app
+        image: busybox
+        command: 
+        - sh
+        - -c
+        - |
+          echo "I am $HOSTNAME with unique data" > /tmp/myfile.txt
+          echo "Created at: $(date)" >> /tmp/myfile.txt
+          sleep 3600
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-demo-headless
+spec:
+  clusterIP: None
+  selector:
+    app: data-demo
+  ports:
+  - port: 80

@@ -1,0 +1,17 @@
+# LoadBalancer Service - External Access via Cloud LB
+# Requires cloud provider (AWS, GCP, Azure)
+# Gets external IP from cloud provider
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-loadbalancer
+spec:
+  type: LoadBalancer
+  selector:
+    app: webapp
+  ports:
+  - port: 80          # External port
+    targetPort: 80    # Pod port
+    protocol: TCP
+# Cloud provider creates external load balancer
+# pointing to all nodes on automatically assigned nodePort

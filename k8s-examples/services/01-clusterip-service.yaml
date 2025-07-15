@@ -1,0 +1,15 @@
+# ClusterIP Service - Internal Only
+# Accessible only from within the cluster
+# Gets internal IP like 10.105.235.202
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-clusterip
+spec:
+  type: ClusterIP  # Default type
+  selector:
+    app: webapp
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
