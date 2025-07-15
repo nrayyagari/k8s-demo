@@ -1,0 +1,182 @@
+# SIMPLE Services - Connect to Your App
+# Problem: Pods have changing IP addresses
+# Solution: Service provides stable way to reach your app
+
+# =================== BASIC SERVICE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: web
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+
+---
+# ClusterIP Service (internal only)
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-service
+spec:
+  selector:
+    app: web-app          # Connect to pods with this label
+  ports:
+  - port: 80              # Service port
+    targetPort: 80        # Pod port
+  type: ClusterIP         # Internal only (default)
+
+---
+# =================== SERVICE TYPES ===================
+
+# 1. ClusterIP (most common)
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-service
+spec:
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP    # Only accessible from inside cluster
+
+---
+# 2. NodePort (external access)
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-service
+spec:
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30080  # Access via <node-ip>:30080
+  type: NodePort
+
+---
+# 3. LoadBalancer (cloud only)
+apiVersion: v1
+kind: Service
+metadata:
+  name: loadbalancer-service
+spec:
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer  # Cloud provider creates load balancer
+
+---
+# =================== SIMPLE COMMANDS ===================
+
+# Deploy everything:
+# kubectl apply -f this-file.yaml
+
+# Check services:
+# kubectl get services
+# kubectl get endpoints
+
+# Test internal service:
+# kubectl run test-pod --image=busybox --restart=Never -- sleep 3600
+# kubectl exec test-pod -- wget -qO- http://web-app-service
+
+# Test external service:
+# kubectl get service external-service
+# curl http://<node-ip>:30080
+
+# Debug service:
+# kubectl describe service web-app-service
+# kubectl get endpoints web-app-service
+
+---
+# =================== WHAT SERVICE DOES ===================
+
+# Load balancing:
+# - Distributes traffic across pods
+# - Automatically excludes unhealthy pods
+# - Round-robin by default
+
+# Service discovery:
+# - Stable DNS name (web-app-service)
+# - Works even if pods restart
+# - Other apps can find your service
+
+# Port mapping:
+# - Service port can be different from pod port
+# - Multiple ports supported
+# - Named ports for clarity
+
+---
+# =================== SIMPLE TROUBLESHOOTING ===================
+
+# Can't reach service:
+# kubectl get endpoints <service-name>
+# Should show pod IPs, if empty:
+# - Check pod labels match service selector
+# - Check pods are running and ready
+
+# Connection refused:
+# kubectl exec -it <pod-name> -- curl http://service-name
+# If this works but external doesn't:
+# - Check service type (ClusterIP vs NodePort)
+# - Check firewall rules
+
+# Service not found:
+# kubectl get services
+# kubectl describe service <service-name>
+# Check service exists in right namespace
+
+---
+# =================== SIMPLE RULES ===================
+
+# 1. Use ClusterIP for internal services
+#    - Database connections
+#    - API calls between services
+#    - Most common type
+
+# 2. Use NodePort for external access
+#    - Development/testing
+#    - Simple external access
+#    - Not for production
+
+# 3. Use LoadBalancer for production
+#    - Cloud environments only
+#    - Automatic external IP
+#    - Built-in load balancing
+
+# 4. Labels must match
+#    - Service selector = Pod labels
+#    - Case sensitive
+#    - Most common mistake
+
+---
+# =================== THAT'S IT! ===================
+
+# This covers service basics:
+# - Stable access to your pods
+# - Load balancing
+# - Service discovery
+# - Internal and external access
+
+# Advanced stuff (only if needed):
+# - Ingress controllers
+# - Session affinity
+# - Custom endpoints
+# - But start simple!

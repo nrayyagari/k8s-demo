@@ -1,0 +1,87 @@
+# START HERE - Simple Kubernetes Guide
+# Problem: Kubernetes seems complicated
+# Solution: Start with these simple examples
+
+# =================== WHAT YOU NEED TO KNOW ===================
+
+# 1. DEPLOYMENTS - Run your app reliably
+# See: deployments/SIMPLE-DEPLOYMENT.yaml
+# - Creates multiple copies of your app
+# - Restarts if they crash
+# - Easy to scale and update
+
+# 2. SERVICES - Connect to your app
+# See: services/SIMPLE-SERVICE.yaml
+# - Stable way to reach your app
+# - Load balances across pods
+# - Works even if pods restart
+
+# 3. CONFIGMAPS & SECRETS - Store configuration
+# See: configmaps-secrets/SIMPLE-CONFIG.yaml
+# - ConfigMaps for settings
+# - Secrets for passwords
+# - Don't hard-code in your app
+
+# 4. HEALTH CHECKS - Tell Kubernetes if your app is healthy
+# See: health-checks/SIMPLE-GUIDE.yaml
+# - Readiness probe: Can handle traffic?
+# - Liveness probe: Is app alive?
+# - Prevents broken apps from getting traffic
+
+# 5. AUTOSCALING - Automatically scale your app
+# See: autoscaling/SIMPLE-AUTOSCALING.yaml
+# - More pods when busy
+# - Fewer pods when idle
+# - Saves money and improves performance
+
+# =================== SIMPLE LEARNING PATH ===================
+
+# 1. Start with deployments and services
+#    - Get your app running
+#    - Make it accessible
+#    - Learn kubectl basics
+
+# 2. Add configuration
+#    - Move secrets out of your app
+#    - Use ConfigMaps for settings
+#    - Practice updates
+
+# 3. Add health checks
+#    - Prevent broken deployments
+#    - Enable zero-downtime updates
+#    - Make your app more reliable
+
+# 4. Add autoscaling
+#    - Handle traffic spikes
+#    - Optimize costs
+#    - Learn about resource management
+
+# 5. Then explore advanced topics
+#    - StatefulSets for databases
+#    - DaemonSets for node agents
+#    - Ingress for external access
+
+# =================== SIMPLE COMMANDS ===================
+
+# Apply any example:
+# kubectl apply -f <filename>.yaml
+
+# Check what's running:
+# kubectl get pods
+# kubectl get services
+# kubectl get deployments
+
+# Debug issues:
+# kubectl describe pod <pod-name>
+# kubectl logs <pod-name>
+
+# Clean up:
+# kubectl delete -f <filename>.yaml
+
+# =================== THAT'S IT! ===================
+
+# Kubernetes is powerful but you don't need to learn everything at once.
+# Start with these simple examples and build up your knowledge gradually.
+# Each example solves a real problem and teaches core concepts.
+# 
+# Remember: Simple is better than complex!

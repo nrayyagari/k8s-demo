@@ -1,0 +1,215 @@
+# SIMPLE Config and Secrets - Just the Basics
+# Problem: Hard-coding passwords and config in your app is bad
+# Solution: Use ConfigMaps and Secrets to store them separately
+
+# =================== CONFIGMAP - FOR CONFIGURATION ===================
+
+# 1. Create a ConfigMap with your app settings
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  app.name: "my-awesome-app"
+  app.version: "1.0.0"
+  database.host: "db.example.com"
+  database.port: "5432"
+  debug.enabled: "false"
+
+---
+# =================== SECRET - FOR PASSWORDS ===================
+
+# 2. Create a Secret with sensitive data
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+type: Opaque
+data:
+  database.password: cGFzc3dvcmQxMjM=  # base64 encoded "password123"
+  api.key: bXlzZWNyZXRhcGlrZXk=        # base64 encoded "mysecretapikey"
+
+---
+# =================== USE THEM IN YOUR APP ===================
+
+# 3. Use ConfigMap and Secret in your deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        
+        # Option 1: As environment variables
+        env:
+        - name: APP_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: app.name
+        - name: DATABASE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: database.host
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: database.password
+        
+        # Option 2: As files (mount as volumes)
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+        - name: secret-volume
+          mountPath: /etc/secrets
+      
+      volumes:
+      - name: config-volume
+        configMap:
+          name: app-config
+      - name: secret-volume
+        secret:
+          secretName: app-secrets
+
+---
+# =================== SIMPLE COMMANDS ===================
+
+# Create ConfigMap from command line:
+# kubectl create configmap app-config --from-literal=app.name=my-app --from-literal=database.host=db.example.com
+
+# Create Secret from command line:
+# kubectl create secret generic app-secrets --from-literal=database.password=password123
+
+# Create from files:
+# kubectl create configmap app-config --from-file=config.properties
+# kubectl create secret generic app-secrets --from-file=secrets.txt
+
+# View them:
+# kubectl get configmaps
+# kubectl get secrets
+# kubectl describe configmap app-config
+# kubectl describe secret app-secrets
+
+---
+# =================== SIMPLE EXAMPLES ===================
+
+# Example 1: Database connection
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-config
+data:
+  host: "postgres.example.com"
+  port: "5432"
+  database: "myapp"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+type: Opaque
+data:
+  username: dXNlcm5hbWU=    # base64 "username"
+  password: cGFzc3dvcmQ=    # base64 "password"
+
+---
+# Example 2: Use in deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database-app
+  template:
+    metadata:
+      labels:
+        app: database-app
+    spec:
+      containers:
+      - name: app
+        image: postgres:13
+        env:
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: db-config
+              key: host
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: password
+
+---
+# =================== SIMPLE RULES ===================
+
+# 1. ConfigMaps = Non-sensitive configuration
+#    - Database hosts, API URLs
+#    - Feature flags, settings
+#    - Anything you're OK with others seeing
+
+# 2. Secrets = Sensitive data
+#    - Passwords, API keys
+#    - Certificates, tokens
+#    - Anything that should be protected
+
+# 3. Two ways to use them:
+#    - Environment variables (most common)
+#    - Files (for complex config)
+
+# 4. Base64 encoding for secrets:
+#    - echo -n "password123" | base64
+#    - It's NOT encryption, just encoding!
+
+---
+# =================== SIMPLE TROUBLESHOOTING ===================
+
+# ConfigMap/Secret not found:
+# kubectl get configmaps
+# kubectl get secrets
+# Check the names match exactly
+
+# Wrong values in pod:
+# kubectl exec -it <pod-name> -- env | grep DATABASE
+# kubectl exec -it <pod-name> -- cat /etc/config/app.name
+
+# Can't decode secret:
+# kubectl get secret app-secrets -o yaml
+# echo "cGFzc3dvcmQxMjM=" | base64 -d
+
+---
+# =================== THAT'S IT! ===================
+
+# This covers the basics:
+# - Store config in ConfigMaps
+# - Store secrets in Secrets
+# - Use them as environment variables
+# - Base64 encode secret values
+
+# Advanced stuff (only if needed):
+# - Mounting as files
+# - Updating without restart
+# - External secret management
+# - But start simple!

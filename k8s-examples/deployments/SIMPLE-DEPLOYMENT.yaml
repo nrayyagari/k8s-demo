@@ -1,0 +1,141 @@
+# SIMPLE Deployments - Just Run Your App
+# Problem: You want to run your app reliably
+# Solution: Deployment manages your pods automatically
+
+# =================== BASIC DEPLOYMENT ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 3              # Run 3 copies of your app
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21    # Your app image
+        ports:
+        - containerPort: 80  # Port your app listens on
+        resources:
+          requests:
+            cpu: 100m        # Minimum CPU needed
+            memory: 128Mi    # Minimum memory needed
+          limits:
+            cpu: 500m        # Maximum CPU allowed
+            memory: 512Mi    # Maximum memory allowed
+
+---
+# =================== EXPOSE YOUR APP ===================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app-service
+spec:
+  selector:
+    app: my-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# =================== SIMPLE COMMANDS ===================
+
+# Deploy your app:
+# kubectl apply -f this-file.yaml
+
+# Check if running:
+# kubectl get pods
+# kubectl get deployments
+# kubectl get services
+
+# Scale up/down:
+# kubectl scale deployment my-app --replicas=5
+
+# Update your app:
+# kubectl set image deployment/my-app app=nginx:1.22
+
+# Delete everything:
+# kubectl delete -f this-file.yaml
+
+---
+# =================== WHAT DEPLOYMENT DOES ===================
+
+# Creates pods:
+# - Starts 3 pods with your app
+# - Each pod runs on different nodes
+# - Spreads load across cluster
+
+# Keeps them running:
+# - Pod crashes? Starts new one
+# - Node fails? Moves pods elsewhere
+# - Always maintains 3 healthy pods
+
+# Rolling updates:
+# - New version? Updates one pod at a time
+# - Always keeps some pods running
+# - Zero downtime updates
+
+---
+# =================== SIMPLE TROUBLESHOOTING ===================
+
+# Pods not starting:
+# kubectl describe pod <pod-name>
+# kubectl logs <pod-name>
+# Check image name and port
+
+# Can't reach service:
+# kubectl get endpoints my-app-service
+# kubectl port-forward service/my-app-service 8080:80
+# Test: curl http://localhost:8080
+
+# Update stuck:
+# kubectl rollout status deployment/my-app
+# kubectl rollout undo deployment/my-app
+
+---
+# =================== SIMPLE RULES ===================
+
+# 1. Always use deployments (not bare pods)
+#    - Self-healing
+#    - Easy scaling
+#    - Rolling updates
+
+# 2. Set resource requests/limits
+#    - Prevents resource starvation
+#    - Enables proper scheduling
+#    - Required for autoscaling
+
+# 3. Use services to expose apps
+#    - Load balancing
+#    - Service discovery
+#    - Stable endpoints
+
+# 4. Label everything consistently
+#    - Makes management easier
+#    - Enables selectors to work
+#    - Good for monitoring
+
+---
+# =================== THAT'S IT! ===================
+
+# This covers most deployment needs:
+# - Reliable app running
+# - Automatic restarts
+# - Easy scaling
+# - Rolling updates
+# - Load balancing
+
+# Advanced stuff (only if needed):
+# - Init containers
+# - Sidecars
+# - Custom strategies
+# - But start simple!
