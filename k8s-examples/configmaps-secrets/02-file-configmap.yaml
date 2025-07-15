@@ -1,0 +1,64 @@
+# ConfigMap with File Contents
+# Stores configuration files that can be mounted as volumes
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: default
+data:
+  # Complete configuration file
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log;
+    pid /run/nginx.pid;
+    
+    events {
+        worker_connections 1024;
+    }
+    
+    http {
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+        
+        access_log /var/log/nginx/access.log main;
+        
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        
+        server {
+            listen 80;
+            server_name localhost;
+            
+            location / {
+                root /usr/share/nginx/html;
+                index index.html index.htm;
+            }
+            
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+            }
+        }
+    }
+  
+  # Custom index.html file
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>My Application</title>
+    </head>
+    <body>
+        <h1>Welcome to My Application</h1>
+        <p>This page is served from a ConfigMap!</p>
+        <p>Version: 1.0.0</p>
+    </body>
+    </html>

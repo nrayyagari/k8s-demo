@@ -1,0 +1,110 @@
+# DaemonSet using ConfigMap for Log Collector Configuration
+# Shows how to configure node-level services
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: log-collector-config
+data:
+  # Log collector configuration
+  log-level: "info"
+  output-format: "json"
+  max-file-size: "100MB"
+  retention-days: "7"
+  
+  # Log collector config file
+  config.yaml: |
+    logging:
+      level: info
+      format: json
+    
+    inputs:
+      - type: file
+        path: /var/log/containers/*.log
+        exclude: ["*kube-system*", "*kube-public*"]
+    
+    outputs:
+      - type: elasticsearch
+        hosts: ["elasticsearch:9200"]
+      - type: file
+        path: /var/log/aggregated.log
+    
+    filters:
+      - type: kubernetes
+        merge_log: true
+        preserve_kubernetes_fields: true
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-collector
+spec:
+  selector:
+    matchLabels:
+      app: log-collector
+  template:
+    metadata:
+      labels:
+        app: log-collector
+    spec:
+      containers:
+      - name: log-collector
+        image: fluent/fluent-bit:latest
+        
+        # Environment variables from ConfigMap
+        env:
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: log-collector-config
+              key: log-level
+        - name: OUTPUT_FORMAT
+          valueFrom:
+            configMapKeyRef:
+              name: log-collector-config
+              key: output-format
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
+        # Mount configuration file
+        volumeMounts:
+        - name: config-volume
+          mountPath: /fluent-bit/etc/fluent-bit.conf
+          subPath: config.yaml
+        
+        # Mount host log directories
+        - name: var-log
+          mountPath: /var/log
+          readOnly: true
+        - name: var-lib-docker
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      
+      volumes:
+      # ConfigMap as configuration file
+      - name: config-volume
+        configMap:
+          name: log-collector-config
+      
+      # Host directories for log collection
+      - name: var-log
+        hostPath:
+          path: /var/log
+      - name: var-lib-docker
+        hostPath:
+          path: /var/lib/docker/containers
+      
+      # Allow running on control plane nodes
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule

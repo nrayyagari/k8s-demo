@@ -1,0 +1,21 @@
+# Basic ConfigMap Example
+# Stores non-sensitive configuration data as key-value pairs
+# Can be used as environment variables or mounted as files
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+data:
+  # Simple key-value pairs
+  app.name: "my-web-app"
+  app.version: "1.0.0"
+  app.environment: "production"
+  
+  # Numeric values (stored as strings)
+  max.connections: "100"
+  timeout.seconds: "30"
+  
+  # Boolean values (stored as strings)
+  debug.enabled: "false"
+  ssl.enabled: "true"
