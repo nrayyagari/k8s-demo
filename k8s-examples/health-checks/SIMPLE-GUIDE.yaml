@@ -1,0 +1,218 @@
+# SIMPLE Health Probes Guide - Just the Essentials
+# Problem: App crashes, Kubernetes doesn't know, users get errors
+# Solution: Tell Kubernetes when your app is broken
+
+# =================== JUST TWO PROBES YOU NEED ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-web-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: simple-web-app
+  template:
+    metadata:
+      labels:
+        app: simple-web-app
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        
+        # 1. LIVENESS PROBE - "Is my app alive?"
+        # If this fails → Kubernetes restarts the container
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30    # Wait 30s after start
+          periodSeconds: 10          # Check every 10s
+          failureThreshold: 3        # Fail 3 times = restart
+        
+        # 2. READINESS PROBE - "Can my app handle traffic?"
+        # If this fails → Kubernetes stops sending traffic
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5     # Start checking after 5s
+          periodSeconds: 5           # Check every 5s
+          failureThreshold: 2        # Fail 2 times = remove from service
+
+---
+# =================== WHAT HAPPENS ===================
+
+# Normal flow:
+# 1. Pod starts
+# 2. Readiness probe passes → Gets traffic
+# 3. Liveness probe passes → Stays alive
+# 4. Users happy ✅
+
+# When app crashes:
+# 1. Liveness probe fails 3 times
+# 2. Kubernetes restarts container
+# 3. New container starts
+# 4. Readiness probe passes → Gets traffic again
+# 5. Problem fixed ✅
+
+# When app is slow/overloaded:
+# 1. Readiness probe fails 2 times
+# 2. Kubernetes stops sending traffic to this pod
+# 3. Other pods handle the traffic
+# 4. This pod recovers
+# 5. Readiness probe passes → Gets traffic again
+# 6. Problem fixed ✅
+
+---
+# =================== SIMPLE DATABASE EXAMPLE ===================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simple-database
+  template:
+    metadata:
+      labels:
+        app: simple-database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "password"
+        
+        # Simple liveness - Can I connect to the database?
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 60    # Database takes time to start
+          periodSeconds: 30          # Check every 30s
+          failureThreshold: 3
+        
+        # Simple readiness - Is database ready for queries?
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 2
+
+---
+# =================== SIMPLE RULES ===================
+
+# 1. ALWAYS use readiness probes
+#    - Prevents broken pods from getting traffic
+#    - Essential for zero-downtime deployments
+
+# 2. Use liveness probes ONLY if:
+#    - Your app sometimes hangs/deadlocks
+#    - Restarting actually fixes the problem
+#    - You're sure it won't restart unnecessarily
+
+# 3. Three probe types (pick one):
+#    - HTTP: For web apps (most common)
+#    - TCP: For databases, simple port checks
+#    - Exec: For custom commands (rarely needed)
+
+# 4. Start with these settings:
+#    - Liveness: initialDelaySeconds: 30, periodSeconds: 10
+#    - Readiness: initialDelaySeconds: 5, periodSeconds: 5
+
+---
+# =================== SIMPLE TROUBLESHOOTING ===================
+
+# Problem: Pods keep restarting
+# kubectl get pods  # Look for high RESTARTS count
+# kubectl describe pod <pod-name>  # Look for "Liveness probe failed"
+# Fix: Increase initialDelaySeconds or remove liveness probe
+
+# Problem: No traffic reaching pods
+# kubectl get endpoints <service-name>  # Should show pod IPs
+# kubectl describe pod <pod-name>  # Look for "Readiness probe failed"
+# Fix: Check if readiness probe path/port is correct
+
+# Problem: App seems slow to start
+# kubectl get pods -w  # Watch READY column change from 0/1 to 1/1
+# Fix: Increase initialDelaySeconds for readiness probe
+
+---
+# =================== SIMPLE MONITORING ===================
+
+# Check probe status:
+# kubectl get pods                    # READY column shows readiness
+# kubectl describe pod <pod-name>     # Shows probe failures
+# kubectl get endpoints <service>     # Shows which pods get traffic
+
+# Test probes manually:
+# kubectl exec -it <pod-name> -- curl http://localhost:80/
+# kubectl exec -it <pod-name> -- nc -zv localhost 5432
+
+---
+# =================== SIMPLE EXAMPLES FOR DIFFERENT APPS ===================
+
+# Web Application:
+# livenessProbe:
+#   httpGet:
+#     path: /health
+#     port: 8080
+
+# Database:
+# livenessProbe:
+#   tcpSocket:
+#     port: 5432
+
+# Custom Check:
+# livenessProbe:
+#   exec:
+#     command: ["pgrep", "my-app"]
+
+---
+# =================== WHEN YOU DON'T NEED PROBES ===================
+
+# Skip liveness probes if:
+# - Your app never hangs
+# - Crashing is worse than hanging
+# - You're not sure (better safe than sorry)
+
+# Skip readiness probes if:
+# - Single replica deployment
+# - App is always ready immediately
+# - You're doing simple testing
+
+# But seriously, just use readiness probes. They're almost always helpful.
+
+---
+# =================== SIMPLE SUMMARY ===================
+
+# 1. Readiness probe = "Can handle traffic?"
+#    - Removes pod from service when failing
+#    - Use this for almost everything
+
+# 2. Liveness probe = "Is app alive?"
+#    - Restarts container when failing
+#    - Use carefully, only when restart helps
+
+# 3. Start simple:
+#    - HTTP probe to /health endpoint
+#    - Or TCP probe to your main port
+#    - Adjust timings based on your app
+
+# 4. Most common setup:
+#    - readinessProbe: httpGet path=/health, check every 5s
+#    - livenessProbe: httpGet path=/health, check every 10s
+#    - Done!
+
+# That's it. Don't overcomplicate it.
