@@ -1,0 +1,103 @@
+# Basic Taints and Tolerations
+# WHY: Node controls which pods can schedule on it
+# PATTERN: Node sets restriction → Pod tolerates restriction
+
+---
+# Example scenario: Dedicated node for database workloads
+# Step 1: Taint a node (simulate - you'd run this as kubectl command)
+# kubectl taint nodes worker-1 workload=database:NoSchedule
+
+---
+# Regular pod WITHOUT toleration - will be rejected by tainted node
+apiVersion: v1
+kind: Pod
+metadata:
+  name: regular-pod
+  labels:
+    app: regular-app
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+  # No tolerations - this pod CANNOT schedule on tainted nodes
+
+---
+# Database pod WITH toleration - can schedule on tainted node
+apiVersion: v1
+kind: Pod
+metadata:
+  name: database-pod
+  labels:
+    app: database
+    workload: database
+spec:
+  # Toleration allows scheduling on tainted nodes
+  tolerations:
+  - key: workload
+    operator: Equal
+    value: database
+    effect: NoSchedule
+  containers:
+  - name: postgres
+    image: postgres:13
+    env:
+    - name: POSTGRES_PASSWORD
+      value: "password123"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "200m"
+
+---
+# System pod with wide tolerations - can run anywhere
+apiVersion: v1
+kind: Pod
+metadata:
+  name: monitoring-pod
+  labels:
+    app: monitoring
+spec:
+  # Multiple tolerations for different taint scenarios
+  tolerations:
+  # Tolerate database workload restriction
+  - key: workload
+    operator: Equal
+    value: database
+    effect: NoSchedule
+  # Tolerate node being unschedulable (maintenance)
+  - key: node.kubernetes.io/unschedulable
+    operator: Exists
+    effect: NoSchedule
+  # Tolerate node not ready (startup)
+  - key: node.kubernetes.io/not-ready
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 300
+  containers:
+  - name: prometheus
+    image: prom/prometheus:v2.40.0
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "50m"
+      limits:
+        memory: "256Mi"
+        cpu: "100m"
+
+# Commands to test:
+# 1. Apply this file: kubectl apply -f 01-basic-taints.yaml
+# 2. Taint a node: kubectl taint nodes <node-name> workload=database:NoSchedule
+# 3. Check pod placement: kubectl get pods -o wide
+# 4. regular-pod should be pending or on non-tainted nodes
+# 5. database-pod should be able to schedule on tainted node
+# 6. Remove taint: kubectl taint nodes <node-name> workload=database:NoSchedule-

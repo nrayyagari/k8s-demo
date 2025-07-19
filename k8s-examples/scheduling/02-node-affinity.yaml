@@ -1,0 +1,182 @@
+# Node Affinity: Pod expresses preference for node characteristics
+# WHY: Pod wants specific node features (SSD, GPU, zone, etc.)
+# PATTERN: Pod looks at node labels and decides preference
+
+---
+# Pod with REQUIRED node affinity - must have SSD
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ssd-required-pod
+  labels:
+    app: high-performance-db
+spec:
+  # HARD constraint: Pod MUST be on SSD node
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: disk-type
+            operator: In
+            values: ["ssd"]
+          - key: node-size
+            operator: In
+            values: ["large", "xlarge"]
+  containers:
+  - name: database
+    image: postgres:13
+    env:
+    - name: POSTGRES_PASSWORD
+      value: "password123"
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+
+---
+# Pod with PREFERRED node affinity - prefers SSD, accepts HDD
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ssd-preferred-pod
+  labels:
+    app: web-cache
+spec:
+  # SOFT constraint: Pod prefers SSD but can run elsewhere
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      # Higher weight = stronger preference
+      - weight: 80
+        preference:
+          matchExpressions:
+          - key: disk-type
+            operator: In
+            values: ["ssd"]
+      - weight: 60
+        preference:
+          matchExpressions:
+          - key: node-size
+            operator: In
+            values: ["large"]
+      - weight: 40
+        preference:
+          matchExpressions:
+          - key: topology.kubernetes.io/zone
+            operator: In
+            values: ["us-west-2a"]
+  containers:
+  - name: redis
+    image: redis:6
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "200m"
+
+---
+# Pod with complex node requirements
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-ml-pod
+  labels:
+    app: ml-training
+spec:
+  affinity:
+    nodeAffinity:
+      # MUST have GPU
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: accelerator
+            operator: In
+            values: ["nvidia-tesla-k80", "nvidia-tesla-p100", "nvidia-tesla-v100"]
+      # PREFER newer GPUs and more memory
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+          - key: accelerator
+            operator: In
+            values: ["nvidia-tesla-v100"]  # Latest GPU
+      - weight: 80
+        preference:
+          matchExpressions:
+          - key: memory-type
+            operator: In
+            values: ["high-memory"]
+  containers:
+  - name: tensorflow
+    image: tensorflow/tensorflow:2.8.0-gpu
+    resources:
+      requests:
+        memory: "4Gi"
+        cpu: "2"
+        nvidia.com/gpu: 1
+      limits:
+        memory: "8Gi"
+        cpu: "4"
+        nvidia.com/gpu: 1
+
+---
+# Deployment using node affinity for zone distribution
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zone-distributed-app
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      affinity:
+        nodeAffinity:
+          # Distribute across multiple zones
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2a"]
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2b"]
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2c"]
+      containers:
+      - name: webapp
+        image: nginx:1.21
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+# Commands to test:
+# 1. Label nodes: kubectl label nodes <node-name> disk-type=ssd
+# 2. Label nodes: kubectl label nodes <node-name> node-size=large
+# 3. Apply: kubectl apply -f 02-node-affinity.yaml
+# 4. Check placement: kubectl get pods -o wide
+# 5. Describe pod to see scheduling decisions: kubectl describe pod ssd-required-pod

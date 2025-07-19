@@ -1,0 +1,153 @@
+# SIMPLE SCHEDULING: Start Here
+# Basic examples to understand scheduling concepts
+
+---
+# 1. Basic pod - no scheduling constraints
+apiVersion: v1
+kind: Pod
+metadata:
+  name: basic-pod
+  labels:
+    app: basic
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# 2. Pod with node selector (simplest targeting)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: node-selector-pod
+  labels:
+    app: targeted
+spec:
+  # Simple way to target nodes by label
+  nodeSelector:
+    disk-type: ssd
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# 3. Pod with toleration (can run on tainted nodes)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: toleration-pod
+  labels:
+    app: tolerant
+spec:
+  # Can schedule on nodes with specific taint
+  tolerations:
+  - key: example-key
+    operator: Equal
+    value: example-value
+    effect: NoSchedule
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# 4. Two pods with affinity relationship
+apiVersion: v1
+kind: Pod
+metadata:
+  name: target-pod
+  labels:
+    app: database
+    role: primary
+spec:
+  containers:
+  - name: postgres
+    image: postgres:13
+    env:
+    - name: POSTGRES_PASSWORD
+      value: "password123"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: affinity-pod
+  labels:
+    app: webapp
+spec:
+  # Wants to be near the database pod
+  affinity:
+    podAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: database
+              role: primary
+          # Same node for best performance
+          topologyKey: kubernetes.io/hostname
+  containers:
+  - name: webapp
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# 5. Deployment with anti-affinity (high availability)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ha-deployment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ha-app
+  template:
+    metadata:
+      labels:
+        app: ha-app
+    spec:
+      # Spread replicas across different nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: ha-app
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: app
+        image: nginx:1.21
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+
+# Test commands:
+# 1. Label a node: kubectl label nodes <node-name> disk-type=ssd
+# 2. Apply: kubectl apply -f SIMPLE-SCHEDULING.yaml
+# 3. Check placement: kubectl get pods -o wide
+# 4. See which pod went where and why
+# 5. Try tainting a node: kubectl taint nodes <node-name> example-key=example-value:NoSchedule
+# 6. See how toleration-pod can still schedule there

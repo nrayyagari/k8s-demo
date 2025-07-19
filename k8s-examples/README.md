@@ -21,6 +21,7 @@ k8s-examples/
 ├── configmaps-secrets/ # Configuration and secrets management
 ├── autoscaling/    # Horizontal Pod Autoscaler examples
 ├── rbac/           # Roles, ClusterRoles, and RBAC examples
+├── scheduling/     # Pod scheduling, taints/tolerations, affinity/anti-affinity
 └── README.md       # This file
 ```
 
@@ -51,6 +52,10 @@ k8s-examples/
 **6. Who can do what in my cluster?** → **RBAC (Roles & ClusterRoles)**
 - Problem: Everyone has admin access - security risk
 - Solution: Fine-grained permissions per user/team
+
+**7. Where should my pods run?** → **Scheduling (Taints, Affinity)**
+- Problem: Default scheduler doesn't understand business needs
+- Solution: Control pod placement for performance and availability
 
 ### The 90/10 Rule
 
@@ -93,11 +98,16 @@ kubectl apply -f statefulsets/01-basic-statefulset.yaml
 kubectl apply -f rbac/SIMPLE-RBAC.yaml
 ```
 
+### 7. Control Pod Placement
+```bash
+kubectl apply -f scheduling/SIMPLE-SCHEDULING.yaml
+```
+
 ## The Pattern: Build Up Gradually
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
-**Level 3**: Add StatefulSets (when needed) → Add RBAC
+**Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling
 
 Each level solves a specific problem. Don't skip ahead.
 
@@ -162,6 +172,12 @@ kubectl get pdb <pdb-name>
 kubectl auth can-i create pods --as=system:serviceaccount:rbac-demo:demo-sa
 ```
 
+### Check pod scheduling:
+```bash
+kubectl get pods -o wide
+kubectl describe pod <pod-name> | grep -A 10 "Node-Selectors"
+```
+
 ## Clean Up
 
 Remove all resources:
@@ -172,6 +188,7 @@ kubectl delete -f statefulsets/
 kubectl delete -f daemonsets/
 kubectl delete -f pdbs/
 kubectl delete -f rbac/
+kubectl delete -f scheduling/
 ```
 
 ## Notes

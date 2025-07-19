@@ -1,0 +1,382 @@
+# Complex Multi-tier Application with Combined Scheduling
+# WHY: Real-world apps need multiple scheduling constraints
+# PATTERN: Combine taints, node affinity, pod affinity/anti-affinity
+
+---
+# Namespace for our complex application
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: complex-app
+  labels:
+    app: e-commerce
+    environment: production
+
+---
+# Database tier: High-memory nodes, spread across zones, isolated
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-cluster
+  namespace: complex-app
+spec:
+  serviceName: postgres-service
+  replicas: 3
+  selector:
+    matchLabels:
+      app: postgres
+      tier: database
+  template:
+    metadata:
+      labels:
+        app: postgres
+        tier: database
+        role: primary
+    spec:
+      # Tolerate database-specific taints
+      tolerations:
+      - key: workload
+        operator: Equal
+        value: database
+        effect: NoSchedule
+      affinity:
+        # Node requirements: High-memory nodes only
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-type
+                operator: In
+                values: ["high-memory"]
+              - key: disk-type
+                operator: In
+                values: ["ssd"]
+        # Pod anti-affinity: Spread across zones for HA
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: postgres
+            topologyKey: topology.kubernetes.io/zone
+      containers:
+      - name: postgres
+        image: postgres:13
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "secure-password-123"
+        - name: POSTGRES_DB
+          value: "ecommerce"
+        ports:
+        - containerPort: 5432
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+
+---
+# Database service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: complex-app
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# Cache tier: Near database, prefer SSD nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cache
+  namespace: complex-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis
+      tier: cache
+  template:
+    metadata:
+      labels:
+        app: redis
+        tier: cache
+    spec:
+      affinity:
+        # Node preference: SSD nodes for performance
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: disk-type
+                operator: In
+                values: ["ssd"]
+        # Pod affinity: Near database for low latency
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: postgres
+              # Same zone as database
+              topologyKey: topology.kubernetes.io/zone
+        # Pod anti-affinity: Distribute cache instances
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 80
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: redis
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: redis
+        image: redis:6
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+
+---
+# API tier: Near cache, spread across nodes, avoid database nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-servers
+  namespace: complex-app
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: api
+      tier: application
+  template:
+    metadata:
+      labels:
+        app: api
+        tier: application
+    spec:
+      # Avoid database nodes (if they're tainted)
+      tolerations: []  # Explicitly no tolerations for database taints
+      affinity:
+        # Node preference: Regular compute nodes
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node-type
+                operator: In
+                values: ["compute"]
+          # Avoid high-memory nodes (save for database)
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: node-type
+                operator: NotIn
+                values: ["high-memory"]
+        # Pod affinity: Near cache for performance
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: redis
+              topologyKey: kubernetes.io/hostname
+        # Pod anti-affinity: Spread for availability
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: api
+              topologyKey: kubernetes.io/hostname
+          # Stay away from database pods
+          - weight: 80
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  tier: database
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: api
+        image: nginx:1.21
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+---
+# Frontend tier: Spread across zones, standard nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: complex-app
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: frontend
+      tier: web
+  template:
+    metadata:
+      labels:
+        app: frontend
+        tier: web
+    spec:
+      affinity:
+        # Node preference: Standard compute nodes
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node-type
+                operator: In
+                values: ["compute", "standard"]
+        # Pod anti-affinity: Spread across zones for global availability
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: frontend
+              # Spread across zones first
+              topologyKey: topology.kubernetes.io/zone
+          - weight: 80
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: frontend
+              # Then spread across nodes
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: frontend
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# Background workers: Batch processing, avoid interfering with user-facing services
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: background-workers
+  namespace: complex-app
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: worker
+      tier: batch
+  template:
+    metadata:
+      labels:
+        app: worker
+        tier: batch
+        workload: cpu-intensive
+    spec:
+      # Can tolerate batch workload taints
+      tolerations:
+      - key: workload
+        operator: Equal
+        value: batch
+        effect: NoSchedule
+      affinity:
+        # Node preference: Dedicated batch nodes if available
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: workload
+                operator: In
+                values: ["batch"]
+          # Fallback to compute nodes
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: node-type
+                operator: In
+                values: ["compute"]
+        # Pod anti-affinity: Stay away from user-facing services
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: tier
+                  operator: In
+                  values: ["web", "application"]
+              topologyKey: kubernetes.io/hostname
+          # Distribute workers for parallel processing
+          - weight: 80
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: worker
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: worker
+        image: busybox:1.35
+        command: ["sh", "-c", "while true; do echo 'Processing batch job'; sleep 30; done"]
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+# Commands to simulate and test:
+# 1. Label nodes:
+#    kubectl label nodes node1 node-type=high-memory disk-type=ssd
+#    kubectl label nodes node2 node-type=compute disk-type=ssd  
+#    kubectl label nodes node3 node-type=standard disk-type=hdd
+#
+# 2. Taint specialized nodes:
+#    kubectl taint nodes node1 workload=database:NoSchedule
+#    kubectl taint nodes node4 workload=batch:NoSchedule
+#
+# 3. Apply the complex application:
+#    kubectl apply -f 05-complex-scheduling.yaml
+#
+# 4. Observe placement:
+#    kubectl get pods -n complex-app -o wide
+#    kubectl get pods -n complex-app -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName,TIER:.metadata.labels.tier
+#
+# 5. Check scheduling decisions:
+#    kubectl describe deployment postgres-cluster -n complex-app
+#    kubectl get events -n complex-app --sort-by='.lastTimestamp'

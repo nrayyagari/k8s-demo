@@ -1,0 +1,241 @@
+# Pod Anti-affinity: Pod wants to AVOID other specific pods  
+# WHY: High availability and resource distribution
+# PATTERN: Pod looks for other pods and wants to stay away
+
+---
+# Web application with REQUIRED anti-affinity - HA across nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ha-webapp
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: ha-webapp
+  template:
+    metadata:
+      labels:
+        app: ha-webapp
+        tier: web
+    spec:
+      affinity:
+        podAntiAffinity:
+          # HARD constraint: NO two replicas on same node
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: ha-webapp
+            # Different hostnames = different nodes
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: webapp
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# Database with zone-level anti-affinity for disaster recovery
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: distributed-database
+spec:
+  serviceName: db-service
+  replicas: 3
+  selector:
+    matchLabels:
+      app: distributed-db
+  template:
+    metadata:
+      labels:
+        app: distributed-db
+        role: database
+    spec:
+      affinity:
+        podAntiAffinity:
+          # HARD constraint: NO two replicas in same zone
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: distributed-db
+            # Different zones = disaster recovery
+            topologyKey: topology.kubernetes.io/zone
+      containers:
+      - name: postgres
+        image: postgres:13
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "password123"
+        ports:
+        - containerPort: 5432
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+---
+# Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-service
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    app: distributed-db
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# API servers with PREFERRED anti-affinity - spread when possible
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-servers
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+        tier: api
+    spec:
+      affinity:
+        podAntiAffinity:
+          # SOFT constraint: Prefer different nodes, allow same if needed
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: api-server
+              # Prefer different nodes
+              topologyKey: kubernetes.io/hostname
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  tier: api
+              # Also avoid other API tier pods
+              topologyKey: topology.kubernetes.io/zone
+      containers:
+      - name: api
+        image: nginx:1.21
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# Mixed affinity/anti-affinity: Near cache, away from other workers
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-workers
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: smart-worker
+  template:
+    metadata:
+      labels:
+        app: smart-worker
+        type: processor
+    spec:
+      affinity:
+        # Want to be NEAR cache for performance
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: redis
+              topologyKey: kubernetes.io/hostname
+        # Want to be AWAY from other workers for resource isolation
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 80
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: smart-worker
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: worker
+        image: busybox:1.35
+        command: ["sleep", "3600"]
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+
+---
+# Resource-intensive pods avoiding each other
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-intensive-jobs
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cpu-job
+  template:
+    metadata:
+      labels:
+        app: cpu-job
+        resource-type: cpu-intensive
+    spec:
+      affinity:
+        podAntiAffinity:
+          # HARD constraint: Don't compete for CPU on same node
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: resource-type
+                operator: In
+                values: ["cpu-intensive", "memory-intensive"]
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: cpu-worker
+        image: busybox:1.35
+        command: ["sh", "-c", "while true; do echo 'CPU intensive work'; sleep 1; done"]
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "1000m"
+          limits:
+            memory: "1Gi"
+            cpu: "2000m"
+
+# Commands to test:
+# 1. Apply: kubectl apply -f 04-pod-antiaffinity.yaml
+# 2. Check distribution: kubectl get pods -o wide
+# 3. Verify no collocation: kubectl get pods -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName | grep ha-webapp
+# 4. Check scheduling events: kubectl describe deployment ha-webapp
+# 5. Scale up to test limits: kubectl scale deployment ha-webapp --replicas=8

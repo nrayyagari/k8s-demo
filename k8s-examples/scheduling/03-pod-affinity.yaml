@@ -1,0 +1,212 @@
+# Pod Affinity: Pod wants to be NEAR other specific pods
+# WHY: Performance optimization through co-location
+# PATTERN: Pod looks for other pods and wants to be close
+
+---
+# Redis cache - will be used as target for affinity
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cache
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis
+      tier: cache
+  template:
+    metadata:
+      labels:
+        app: redis
+        tier: cache
+    spec:
+      containers:
+      - name: redis
+        image: redis:6
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+
+---
+# Web app with REQUIRED pod affinity - MUST be with Redis
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-with-required-affinity
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: webapp
+      affinity-type: required
+  template:
+    metadata:
+      labels:
+        app: webapp
+        affinity-type: required
+    spec:
+      affinity:
+        podAffinity:
+          # HARD constraint: MUST be on same node as Redis
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values: ["redis"]
+              - key: tier
+                operator: In
+                values: ["cache"]
+            # Same hostname = same node
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: webapp
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# API server with PREFERRED pod affinity - prefers to be with Redis
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-with-preferred-affinity
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: api-server
+      affinity-type: preferred
+  template:
+    metadata:
+      labels:
+        app: api-server
+        affinity-type: preferred
+    spec:
+      affinity:
+        podAffinity:
+          # SOFT constraint: Prefer to be near Redis
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: redis
+                  tier: cache
+              # Same zone = better performance, fallback allowed
+              topologyKey: topology.kubernetes.io/zone
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: webapp
+              # Also prefer to be near webapp
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: api
+        image: nginx:1.21
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# Database pod that attracts application pods
+apiVersion: v1
+kind: Pod
+metadata:
+  name: primary-database
+  labels:
+    app: database
+    role: primary
+    tier: data
+spec:
+  containers:
+  - name: postgres
+    image: postgres:13
+    env:
+    - name: POSTGRES_PASSWORD
+      value: "password123"
+    ports:
+    - containerPort: 5432
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+
+---
+# Worker pods that want to be near the database
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-workers
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      affinity:
+        podAffinity:
+          # Strong preference to be near primary database
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: database
+                  role: primary
+              # Same node for lowest latency
+              topologyKey: kubernetes.io/hostname
+          # Backup preference for any database
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: tier
+                  operator: In
+                  values: ["data"]
+              topologyKey: topology.kubernetes.io/zone
+      containers:
+      - name: worker
+        image: busybox:1.35
+        command: ["sleep", "3600"]
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+# Commands to test:
+# 1. Apply: kubectl apply -f 03-pod-affinity.yaml
+# 2. Check pod placement: kubectl get pods -o wide
+# 3. Verify affinity worked: kubectl describe pod <webapp-pod> | grep -A 10 "Node-Selectors"
+# 4. See events: kubectl get events --sort-by='.lastTimestamp'
+# 5. Check if pods are co-located: kubectl get pods -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName
