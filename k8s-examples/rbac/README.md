@@ -17,6 +17,7 @@ Answer: Roles + RoleBindings (namespace-scoped) or ClusterRoles + ClusterRoleBin
 1. **Subject** (WHO): Users, Groups, ServiceAccounts
 2. **Verb** (WHAT ACTION): get, list, create, update, delete, patch, watch
 3. **Resource** (ON WHAT): pods, services, deployments, nodes, namespaces
+4. **API Group** (WHERE RESOURCE LIVES): Core (""), apps, rbac.authorization.k8s.io
 
 ### Role vs ClusterRole Decision Tree
 
@@ -40,6 +41,171 @@ Defines WHAT permissions exist (just a template, no targeting)
 
 ### RoleBinding/ClusterRoleBinding = WHERE Applied
 Determines scope and WHO gets the permissions
+
+## Understanding API Groups
+
+### WHY API Groups Exist
+**Problem**: Kubernetes has hundreds of resource types - need organization  
+**Solution**: Group related resources together (like directories in filesystem)
+
+### The API Group Structure
+```
+kubernetes.io/api/
+├── core (legacy "")          # pods, services, configmaps, secrets
+├── apps/v1                   # deployments, replicasets, statefulsets  
+├── networking.k8s.io/v1      # ingresses, networkpolicies
+├── rbac.authorization.k8s.io # roles, clusterroles, bindings
+├── storage.k8s.io/v1         # storageclasses, volumeattachments
+├── autoscaling/v1            # horizontalpodautoscalers
+└── apiextensions.k8s.io/v1   # customresourcedefinitions
+```
+
+### Core API Group (Empty String)
+```yaml
+# Core resources use empty string ""
+apiGroups: [""]
+resources: ["pods", "services", "configmaps", "secrets", "nodes"]
+```
+
+### Named API Groups
+```yaml
+# Apps API group
+apiGroups: ["apps"] 
+resources: ["deployments", "replicasets", "statefulsets"]
+
+# RBAC API group
+apiGroups: ["rbac.authorization.k8s.io"]
+resources: ["roles", "clusterroles", "rolebindings"]
+
+# Networking API group  
+apiGroups: ["networking.k8s.io"]
+resources: ["ingresses", "networkpolicies"]
+```
+
+### Discovering API Groups and Resources
+
+#### List all API groups:
+```bash
+kubectl api-resources --output=wide
+kubectl api-versions
+```
+
+#### Find specific resource's API group:
+```bash
+# What API group contains deployments?
+kubectl api-resources | grep deployments
+# Output: deployments  deploy   apps/v1  true  Deployment
+
+# What API group contains ingresses?
+kubectl api-resources | grep ingress
+# Output: ingresses    ing      networking.k8s.io/v1  true  Ingress
+```
+
+#### Check API group contents:
+```bash
+# List resources in core API group
+kubectl api-resources --api-group=""
+
+# List resources in apps API group
+kubectl api-resources --api-group="apps"
+
+# List resources in networking API group
+kubectl api-resources --api-group="networking.k8s.io"
+```
+
+#### Explain resource details:
+```bash
+# Get full API details for a resource
+kubectl explain pod
+kubectl explain deployment
+kubectl explain ingress
+
+# See API version and group
+kubectl explain deployment.apiVersion
+```
+
+### Common API Groups by Use Case
+
+**Application Workloads**:
+- `""` (core): pods, services, configmaps, secrets
+- `apps`: deployments, replicasets, statefulsets, daemonsets
+
+**Networking**:
+- `""` (core): services, endpoints  
+- `networking.k8s.io`: ingresses, networkpolicies
+
+**Storage**:
+- `""` (core): persistentvolumes, persistentvolumeclaims
+- `storage.k8s.io`: storageclasses, volumeattachments
+
+**Security & RBAC**:
+- `rbac.authorization.k8s.io`: roles, clusterroles, rolebindings, clusterrolebindings
+
+**Cluster Management**:
+- `""` (core): nodes, namespaces
+- `metrics.k8s.io`: node metrics, pod metrics
+
+### RBAC Examples with API Groups
+
+#### Multiple API groups in one role:
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: developer-role
+rules:
+# Core API group (pods, services)
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps"]
+  verbs: ["get", "list", "create", "update", "delete"]
+# Apps API group (deployments)  
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "create", "update", "delete"]
+# Networking API group (ingresses)
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "create", "update"]
+```
+
+#### Wildcard access to all API groups:
+```yaml
+# DANGEROUS: Access to everything
+rules:
+- apiGroups: ["*"]  # All API groups
+  resources: ["*"]  # All resources
+  verbs: ["*"]      # All actions
+```
+
+### Best Practices for API Groups
+
+**1. Be Specific**: List exact API groups, avoid wildcards
+```yaml
+# Good: Specific API groups
+apiGroups: ["", "apps", "networking.k8s.io"]
+
+# Bad: Wildcard (too permissive)  
+apiGroups: ["*"]
+```
+
+**2. Understand Resource Locations**: Know which API group contains what
+```yaml
+# pods are in core (""), not apps
+apiGroups: [""]
+resources: ["pods"]
+
+# deployments are in apps, not core
+apiGroups: ["apps"] 
+resources: ["deployments"]
+```
+
+**3. Version Awareness**: API groups have versions
+```bash
+# Check available versions
+kubectl api-versions | grep networking
+# networking.k8s.io/v1
+# networking.k8s.io/v1beta1
+```
 
 ## Pattern: ClusterRole + Different Bindings
 
@@ -112,6 +278,14 @@ REQUIRE ClusterRoles:
 ```bash
 kubectl auth can-i create pods --as=system:serviceaccount:team-alpha:developer
 kubectl auth can-i list nodes --as=system:serviceaccount:team-alpha:developer
+```
+
+### Discover API groups and resources:
+```bash
+kubectl api-resources --output=wide
+kubectl api-resources | grep -i <resource-name>
+kubectl api-resources --api-group="apps"
+kubectl explain <resource-type>
 ```
 
 ### View role assignments:
