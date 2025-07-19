@@ -1,6 +1,6 @@
-# LoadBalancer Service - External Access via Cloud LB
-# Requires cloud provider (AWS, GCP, Azure)
-# Gets external IP from cloud provider
+# WHY: Need production-grade external access
+# PROBLEM: NodePort requires manual load balancing
+# SOLUTION: Cloud provider creates managed load balancer
 apiVersion: v1
 kind: Service
 metadata:

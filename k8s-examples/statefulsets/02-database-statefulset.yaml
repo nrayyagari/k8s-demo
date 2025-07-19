@@ -1,6 +1,6 @@
-# Database StatefulSet with Persistent Storage
-# Each pod gets its own persistent volume
-# Survives pod restarts and failures
+# WHY: Database needs persistent storage that survives restarts
+# PROBLEM: Each database instance needs its own unique data
+# SOLUTION: StatefulSet + volumeClaimTemplates = individual storage per pod
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

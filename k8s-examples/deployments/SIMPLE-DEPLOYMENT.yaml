@@ -1,6 +1,6 @@
-# SIMPLE Deployments - Just Run Your App
-# Problem: You want to run your app reliably
-# Solution: Deployment manages your pods automatically
+# WHY: You want your app to run reliably
+# PROBLEM: Containers crash, nodes fail, need multiple copies
+# SOLUTION: Deployment automatically manages pod lifecycle
 
 # =================== BASIC DEPLOYMENT ===================
 

@@ -1,38 +1,28 @@
-# START HERE - Simple Kubernetes Guide
-# Problem: Kubernetes seems complicated
-# Solution: Start with these simple examples
+# WHY: Kubernetes solves real problems, learn them one by one
+# PROBLEM: Kubernetes feels overwhelming with too many concepts
+# SOLUTION: Start with fundamental questions and build up gradually
 
-# =================== WHAT YOU NEED TO KNOW ===================
+# =================== THE FUNDAMENTAL QUESTIONS ===================
 
-# 1. DEPLOYMENTS - Run your app reliably
-# See: deployments/SIMPLE-DEPLOYMENT.yaml
-# - Creates multiple copies of your app
-# - Restarts if they crash
-# - Easy to scale and update
+# Question 1: "How do I run my app reliably?"
+# Answer: DEPLOYMENTS → deployments/SIMPLE-DEPLOYMENT.yaml
+# Why: Containers crash, need automatic restarts and multiple copies
 
-# 2. SERVICES - Connect to your app
-# See: services/SIMPLE-SERVICE.yaml
-# - Stable way to reach your app
-# - Load balances across pods
-# - Works even if pods restart
+# Question 2: "How do users reach my app?"  
+# Answer: SERVICES → services/SIMPLE-SERVICE.yaml
+# Why: Pod IPs change, need stable endpoint with load balancing
 
-# 3. CONFIGMAPS & SECRETS - Store configuration
-# See: configmaps-secrets/SIMPLE-CONFIG.yaml
-# - ConfigMaps for settings
-# - Secrets for passwords
-# - Don't hard-code in your app
+# Question 3: "How do I avoid hardcoding secrets?"
+# Answer: CONFIGMAPS & SECRETS → configmaps-secrets/SIMPLE-CONFIG.yaml  
+# Why: Security risk and inflexibility to hardcode passwords/config
 
-# 4. HEALTH CHECKS - Tell Kubernetes if your app is healthy
-# See: health-checks/SIMPLE-GUIDE.yaml
-# - Readiness probe: Can handle traffic?
-# - Liveness probe: Is app alive?
-# - Prevents broken apps from getting traffic
+# Question 4: "How does Kubernetes know my app is healthy?"
+# Answer: HEALTH CHECKS → health-checks/SIMPLE-GUIDE.yaml
+# Why: App might run but be broken, need automatic detection
 
-# 5. AUTOSCALING - Automatically scale your app
-# See: autoscaling/SIMPLE-AUTOSCALING.yaml
-# - More pods when busy
-# - Fewer pods when idle
-# - Saves money and improves performance
+# Question 5: "How do I handle traffic spikes automatically?"
+# Answer: AUTOSCALING → autoscaling/SIMPLE-AUTOSCALING.yaml
+# Why: Manual scaling is slow, waste money on idle resources
 
 # =================== SIMPLE LEARNING PATH ===================
 

@@ -1,6 +1,6 @@
-# Pod Disruption Budget (PDB) Example
-# Ensures minimum 3 pods remain available during voluntary disruptions
-# Protects against node maintenance, cluster upgrades, rolling updates
+# WHY: Prevent maintenance from breaking your app
+# PROBLEM: Node maintenance could take down too many pods at once
+# SOLUTION: PDB ensures minimum pods stay running during voluntary disruptions
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

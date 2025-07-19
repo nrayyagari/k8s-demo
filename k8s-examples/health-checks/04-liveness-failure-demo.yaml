@@ -1,0 +1,37 @@
+# WHY: Show what happens when liveness probe fails
+# PROBLEM: Need to understand container vs pod restart
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: liveness-failure-demo
+spec:
+  containers:
+  - name: web-container
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+    livenessProbe:
+      httpGet:
+        path: /this-page-does-not-exist  # Will return 404 = failure
+        port: 80
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      failureThreshold: 2  # Fail after 2 attempts = 10s
+
+# WHAT HAPPENS:
+# 1. Pod starts normally
+# 2. After 10s, liveness probe starts checking /this-page-does-not-exist
+# 3. nginx returns 404 (probe failure)
+# 4. After 2 failures (10s), Kubernetes kills container
+# 5. New container starts in same pod
+# 6. Pod name stays same, RESTARTS count increases
+
+# WATCH IT HAPPEN:
+# kubectl apply -f 04-liveness-failure-demo.yaml
+# kubectl get pods -w  # Watch RESTARTS column increase
+# kubectl describe pod liveness-failure-demo  # See failure events
+
+# KEY INSIGHT: 
+# Container restarts, NOT pod restart
+# Same pod name, same IP, just new container process

@@ -1,6 +1,11 @@
-# Kubernetes Examples Collection
+# Kubernetes Examples: Learn by Doing
 
-This directory contains organized Kubernetes YAML examples covering the main resource types and concepts.
+## WHY This Repository Exists
+
+**Problem**: Kubernetes concepts are complex and abstract  
+**Solution**: Practical, runnable examples that teach through first principles
+
+Start with WHY, then HOW, then practice.
 
 ## Directory Structure
 
@@ -11,93 +16,109 @@ k8s-examples/
 ├── statefulsets/    # StatefulSet examples
 ├── daemonsets/      # DaemonSet examples
 ├── pdbs/           # Pod Disruption Budget examples
+├── ingress/        # Ingress controller and routing examples
+├── health-checks/  # Liveness, readiness, and startup probes
+├── configmaps-secrets/ # Configuration and secrets management
+├── autoscaling/    # Horizontal Pod Autoscaler examples
 └── README.md       # This file
 ```
 
-## Quick Reference
+## Core Concepts: First Principles
 
-### Deployments
-- **Use case**: Stateless applications (web servers, APIs, microservices)
-- **Features**: Rolling updates, scaling, self-healing
-- **Pod names**: Random (webapp-abc123-def456)
+### The Fundamental Questions
 
-### Services
-- **ClusterIP**: Internal cluster communication only
-- **NodePort**: External access via NodeIP:Port
-- **LoadBalancer**: External access via cloud provider load balancer
+**1. How do I run my app reliably?** → **Deployments**
+- Problem: Containers crash, nodes fail
+- Solution: Automatically restart and spread across nodes
 
-### StatefulSets
-- **Use case**: Stateful applications (databases, message queues)
-- **Features**: Persistent identity, ordered deployment, persistent storage
-- **Pod names**: Predictable (database-0, database-1, database-2)
+**2. How do users reach my app?** → **Services** 
+- Problem: Pod IPs change constantly
+- Solution: Stable endpoint that routes to healthy pods
 
-### DaemonSets
-- **Use case**: Node-level services (logging, monitoring, networking)
-- **Features**: One pod per node, automatic scaling with cluster
-- **Common examples**: Log collectors, monitoring agents, network plugins
+**3. What if my pods need unique identity?** → **StatefulSets**
+- Problem: Database clusters need master/slave roles
+- Solution: Predictable names + individual storage
 
-### Pod Disruption Budgets (PDB)
-- **Use case**: Maintain availability during voluntary disruptions
-- **Features**: Prevents too many pods from being unavailable
-- **Protection**: Node maintenance, cluster upgrades, rolling updates
+**4. How do I route HTTP traffic efficiently?** → **Ingress**
+- Problem: Need external access to multiple services
+- Solution: Single entry point with smart routing
 
-## Usage Examples
+**5. How does Kubernetes know my app is healthy?** → **Health Probes**
+- Problem: App might be running but broken
+- Solution: Kubernetes checks and acts on failures
 
-### Deploy a basic web application:
+### The 90/10 Rule
+
+**90% of workloads**: Stateless web apps
+- Use: Deployment + Service + Ingress + Health Probes
+
+**10% of workloads**: Stateful systems  
+- Use: StatefulSet + Headless Service + Health Probes
+
+## Learning Path: Start Here
+
+### 1. Run Your First App (Start Here)
 ```bash
-kubectl apply -f deployments/01-basic-deployment.yaml
-kubectl apply -f services/01-clusterip-service.yaml
+kubectl apply -f deployments/SIMPLE-DEPLOYMENT.yaml
 ```
 
-### Deploy a database with persistent storage:
+### 2. Connect to Your App  
 ```bash
-kubectl apply -f statefulsets/02-database-statefulset.yaml
+kubectl apply -f services/SIMPLE-SERVICE.yaml
 ```
 
-### Deploy a log collector on all nodes:
+### 3. Make Your App Healthy
 ```bash
-kubectl apply -f daemonsets/01-log-collector-daemonset.yaml
+kubectl apply -f health-checks/SIMPLE-GUIDE.yaml
 ```
 
-### Protect your application with PDB:
+### 4. Expose Your App to the Internet
 ```bash
-kubectl apply -f pdbs/01-webapp-pdb.yaml
+kubectl apply -f ingress/01-ingress-controller.yaml
+kubectl apply -f ingress/03-basic-ingress.yaml
 ```
 
-## Key Concepts Demonstrated
+### 5. When You Need Databases
+```bash
+kubectl apply -f statefulsets/01-basic-statefulset.yaml
+```
 
-### Labels and Selectors
-All examples use `app: <name>` labels to connect services to pods:
+## The Pattern: Build Up Gradually
+
+**Level 1**: Pod → Deployment → Service  
+**Level 2**: Add Health Probes → Add Ingress  
+**Level 3**: Add StatefulSets (when needed)
+
+Each level solves a specific problem. Don't skip ahead.
+
+## Key Principles Applied
+
+### 1. Labels Connect Everything
 ```yaml
-# Pod template
+# Pod has label
 labels:
   app: webapp
 
-# Service selector
+# Service finds pod by label  
 selector:
   app: webapp
 ```
+**Rule**: Labels must match exactly (case-sensitive)
 
-### Port Mapping
-Services route traffic through three port types:
-- **port**: Service listens on this port
-- **targetPort**: Pod container port
-- **nodePort**: External port on nodes (NodePort only)
+### 2. Start Simple, Add Complexity
+- Basic: Pod → Deployment
+- Add reliability: + Service  
+- Add health: + Probes
+- Add external access: + Ingress
+- Add state: + StatefulSet (only when needed)
 
-### Persistent Storage
-StatefulSets use `volumeClaimTemplates` to create unique storage per pod:
-- `data-database-0` for `database-0`
-- `data-database-1` for `database-1`
-- `data-database-2` for `database-2`
+### 3. One Responsibility Per Resource
+- **Deployment**: Run app reliably
+- **Service**: Route traffic to app
+- **Ingress**: Route external HTTP traffic  
+- **ProbeS**: Check app health
 
-### Node Selection
-DaemonSets include tolerations to run on control plane nodes:
-```yaml
-tolerations:
-- key: node-role.kubernetes.io/control-plane
-  operator: Exists
-  effect: NoSchedule
-```
+Don't try to solve everything in one resource.
 
 ## Commands for Testing
 

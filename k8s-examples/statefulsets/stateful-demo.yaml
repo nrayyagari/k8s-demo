@@ -1,17 +1,21 @@
+# WHY: Show ordered pod creation and unique identity
+# PROBLEM: Need to verify StatefulSet creates predictable pod names
+# SOLUTION: Each pod writes its hostname to demonstrate identity
+
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: data-demo
+  name: identity-demo
 spec:
-  serviceName: data-demo-headless
+  serviceName: identity-demo-headless
   replicas: 3
   selector:
     matchLabels:
-      app: data-demo
+      app: identity-demo
   template:
     metadata:
       labels:
-        app: data-demo
+        app: identity-demo
     spec:
       containers:
       - name: app
@@ -20,23 +24,34 @@ spec:
         - sh
         - -c
         - |
-          echo "I am $HOSTNAME with unique data" > /tmp/myfile.txt
-          echo "Created at: $(date)" >> /tmp/myfile.txt
+          echo "I am pod: $HOSTNAME" > /data/identity.txt
+          echo "Created at: $(date)" >> /data/identity.txt
+          echo "My unique storage is mounted at /data" >> /data/identity.txt
+          cat /data/identity.txt
           sleep 3600
         volumeMounts:
         - name: data
           mountPath: /data
       volumes:
       - name: data
-        emptyDir: {}
+        emptyDir: {}  # Simple demo - in real world use PVC
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: data-demo-headless
+  name: identity-demo-headless
 spec:
   clusterIP: None
   selector:
-    app: data-demo
+    app: identity-demo
   ports:
   - port: 80
+
+# WATCH ORDERED CREATION:
+# kubectl apply -f stateful-demo.yaml
+# kubectl get pods -w  # See pods created one by one
+# 
+# VERIFY IDENTITY:
+# kubectl exec identity-demo-0 -- cat /data/identity.txt
+# kubectl exec identity-demo-1 -- cat /data/identity.txt
+# Each pod has unique hostname and separate storage

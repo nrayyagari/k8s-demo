@@ -1,6 +1,6 @@
-# SIMPLE Config and Secrets - Just the Basics
-# Problem: Hard-coding passwords and config in your app is bad
-# Solution: Use ConfigMaps and Secrets to store them separately
+# WHY: Don't hardcode passwords and config in your app
+# PROBLEM: Secrets in code = security risk, config changes need rebuilds
+# SOLUTION: ConfigMaps for settings, Secrets for passwords
 
 # =================== CONFIGMAP - FOR CONFIGURATION ===================
 

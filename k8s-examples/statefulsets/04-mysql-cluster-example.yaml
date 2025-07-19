@@ -1,0 +1,88 @@
+# WHY: Real-world example of why StatefulSets exist
+# PROBLEM: MySQL cluster where mysql-0 = master, others = slaves
+# SOLUTION: StatefulSet ensures predictable roles and startup order
+
+---
+# ❌ DEPLOYMENT ATTEMPT (Doesn't work)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql-cluster
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: mysql-data
+        persistentVolumeClaim:
+          claimName: mysql-pvc  # ❌ ALL pods share same PV!
+
+# PROBLEMS with Deployment:
+# 1. All pods get same PVC → data corruption
+# 2. Random pod names → can't identify master/slave
+# 3. Random startup order → slaves might start before master
+# 4. When pod restarts, gets different name → loses role
+
+---
+# ✅ STATEFULSET SOLUTION
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        command:
+        - bash
+        - -c
+        - |
+          if [[ $POD_NAME == "mysql-0" ]]; then
+            echo "I am the MASTER"
+            # Master configuration
+          else
+            echo "I am SLAVE, master is mysql-0"
+            # Slave configuration pointing to mysql-0
+          fi
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+  - metadata:
+      name: mysql-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
+
+# BENEFITS of StatefulSet:
+# 1. mysql-0 always gets mysql-data-mysql-0 PVC
+# 2. mysql-1 always gets mysql-data-mysql-1 PVC  
+# 3. mysql-2 always gets mysql-data-mysql-2 PVC
+# 4. Start order: mysql-0 → mysql-1 → mysql-2
+# 5. Predictable network identity: mysql-0.mysql-headless.default.svc.cluster.local

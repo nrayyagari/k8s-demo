@@ -36,3 +36,36 @@ spec:
     app: web-stateful
   ports:
   - port: 80
+
+# =================== KEY CONCEPTS ===================
+
+# Pod Identity:
+# - web-stateful-0, web-stateful-1, web-stateful-2 (predictable names)
+# - Each pod gets unique DNS: web-stateful-0.web-headless.default.svc.cluster.local
+
+# Startup Order:
+# - web-stateful-0 starts first → waits to be ready
+# - web-stateful-1 starts next → waits to be ready  
+# - web-stateful-2 starts last
+
+# Shutdown Order (reverse):
+# - web-stateful-2 stops first
+# - web-stateful-1 stops next
+# - web-stateful-0 stops last
+
+# When to Use StatefulSets:
+# ✅ Databases needing master/slave roles
+# ✅ Applications requiring persistent identity
+# ✅ Systems needing ordered startup/shutdown
+# ✅ Each pod needs unique storage
+
+# When NOT to Use StatefulSets:
+# ❌ Stateless web applications
+# ❌ When all pods are identical
+# ❌ When external storage is used (RDS, S3)
+# ❌ Simple horizontal scaling scenarios
+
+# Test StatefulSet behavior:
+# kubectl get pods -w  # Watch ordered creation
+# kubectl scale statefulset web-stateful --replicas=5  # Scale up
+# kubectl scale statefulset web-stateful --replicas=1  # Scale down (reverse order)

@@ -1,6 +1,6 @@
-# SIMPLE Autoscaling - Just What You Need
-# Problem: Traffic goes up → App slows down → Users unhappy
-# Solution: Automatically add more pods when busy
+# WHY: Handle traffic spikes without manual intervention  
+# PROBLEM: High traffic overwhelms fixed number of pods
+# SOLUTION: Automatically scale pods up/down based on CPU usage
 
 # =================== BASIC SETUP ===================
 

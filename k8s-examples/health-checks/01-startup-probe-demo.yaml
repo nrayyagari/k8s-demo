@@ -1,0 +1,65 @@
+# WHY: Some apps take long to start
+# PROBLEM: App needs 5 minutes to start, but liveness probe kills it in 30 seconds
+# SOLUTION: Startup probe gives more time during startup only
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slow-startup-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: slow-startup-app
+  template:
+    metadata:
+      labels:
+        app: slow-startup-app
+    spec:
+      containers:
+      - name: java-app
+        image: openjdk:11-jre-slim
+        command: ["sh", "-c", "sleep 120 && java -jar /app.jar"]  # Simulates slow startup
+        ports:
+        - containerPort: 8080
+        
+        # STARTUP PROBE - Takes over during startup phase
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 10
+          failureThreshold: 30      # 30 × 10s = 5 minutes allowed for startup
+          
+        # LIVENESS PROBE - Activates AFTER startup probe succeeds  
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 10
+          failureThreshold: 3       # Only 30s patience during normal operation
+          
+        # READINESS PROBE - Works normally throughout
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 5
+          failureThreshold: 2
+
+---
+# Timeline Visualization:
+# 
+# 0-300s:  Startup probe active → Liveness probe DISABLED
+# 300s:    Startup probe succeeds once → Startup probe DISABLED forever  
+# 300s+:   Liveness probe takes over with normal 30s timeout
+#
+# Problem without startup probe:
+# - App needs 300s to start
+# - Liveness probe timeout: 30s + (10s × 3) = 60s maximum
+# - App gets killed at 60s → restart loop forever
+#
+# Solution with startup probe:
+# - Startup probe allows 300s for initialization
+# - Once startup succeeds, liveness probe enforces fast failure detection
+# - Best of both worlds: patient startup + responsive runtime monitoring

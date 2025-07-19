@@ -1,6 +1,6 @@
-# SIMPLE kubectl debug - Fix Your Broken Pods
-# Problem: Your pod is broken and you can't figure out why
-# Solution: Use kubectl debug to investigate
+# WHY: You need to investigate when things go wrong
+# PROBLEM: Pods fail and you can't see inside them to debug
+# SOLUTION: kubectl debug gives you investigative tools
 
 # =================== BASIC DEBUG SCENARIOS ===================
 

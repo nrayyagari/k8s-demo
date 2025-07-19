@@ -1,6 +1,6 @@
-# NodePort Service - External Access via Node IP
-# Accessible from outside cluster using NodeIP:30080
-# Example: http://172.16.0.2:30080
+# WHY: Need simple external access for testing/development
+# PROBLEM: ClusterIP only works inside cluster
+# SOLUTION: NodePort opens port on every node for external access
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,6 +1,6 @@
-# Prerequisites for HPA and VPA
-# WHY: Both autoscalers need specific components to function
-# WHAT: This file shows what needs to be installed/configured
+# WHY: Autoscaling needs metrics to make decisions
+# PROBLEM: Can't scale without knowing CPU/memory usage
+# SOLUTION: Install metrics-server for basic autoscaling
 
 # =================== HPA PREREQUISITES ===================
 # HPA is built into Kubernetes but needs metrics-server

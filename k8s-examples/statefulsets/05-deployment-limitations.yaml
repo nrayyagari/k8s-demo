@@ -1,0 +1,71 @@
+# WHY: Show technical limitation of Deployments
+# PROBLEM: Can't give each pod in a Deployment its own unique PVC
+# SOLUTION: StatefulSet's volumeClaimTemplates solves this
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-storage-problem
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: storage-demo
+  template:
+    metadata:
+      labels:
+        app: storage-demo
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+        volumeMounts:
+        - name: app-data
+          mountPath: /data
+      volumes:
+      - name: app-data
+        persistentVolumeClaim:
+          claimName: shared-storage  # ❌ PROBLEM: All pods use same PVC
+
+# WHAT GOES WRONG:
+# 1. All 3 pods mount the same PVC
+# 2. All write to /data at the same time  
+# 3. Data corruption and race conditions
+# 4. Can't tell which pod wrote what
+
+---
+# WORKAROUND: Init container creates unique PVC
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app-with-unique-storage
+spec:
+  replicas: 3
+  template:
+    spec:
+      initContainers:
+      - name: create-pvc
+        image: kubectl:latest
+        command:
+        - bash
+        - -c
+        - |
+          # Create unique PVC based on pod IP or hostname
+          UNIQUE_ID=$(hostname | cut -d'-' -f3-4)
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: app-data-${UNIQUE_ID}
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 1Gi
+          EOF
+      containers:
+      - name: app
+        image: myapp:v1
+        # ❌ Still can't reference dynamic PVC name in volumes section
+
+# PROBLEM: Kubernetes doesn't support dynamic volume names in pod spec

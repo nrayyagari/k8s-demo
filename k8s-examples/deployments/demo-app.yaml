@@ -1,3 +1,7 @@
+# WHY: Show that each pod has unique identity within deployment
+# PROBLEM: Need to verify load balancing is working
+# SOLUTION: Each pod displays its own hostname
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,3 +23,17 @@ spec:
         - containerPort: 80
         command: ["/bin/sh"]
         args: ["-c", "echo '<h1>Hello from Pod: $HOSTNAME</h1>' > /usr/share/nginx/html/index.html && nginx -g 'daemon off;'"]
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+
+# TEST LOAD BALANCING:
+# kubectl apply -f demo-app.yaml
+# kubectl expose deployment demo-app --port=80 --type=ClusterIP
+# kubectl run test --image=busybox --rm -it -- sh
+# while true; do wget -qO- http://demo-app; sleep 1; done
+# You'll see different hostnames = load balancing working!

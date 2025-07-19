@@ -1,3 +1,7 @@
+# WHY: Complete example showing deployment + service together
+# PROBLEM: Need both app reliability AND stable access
+# SOLUTION: Deployment for reliability + Service for stable endpoint
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,14 +31,21 @@ spec:
             memory: "128Mi"
             cpu: "100m"
 ---
+# Service provides stable endpoint to reach the deployment
 apiVersion: v1
 kind: Service
 metadata:
   name: webapp-service
 spec:
   selector:
-    app: webapp
+    app: webapp  # Must match deployment labels
   ports:
   - port: 80
     targetPort: 80
   type: ClusterIP
+
+# THE PATTERN:
+# 1. Deployment creates reliable, scalable pods
+# 2. Service provides stable way to reach those pods
+# 3. Labels connect service to deployment
+# 4. This is the foundation for most Kubernetes workloads

@@ -216,3 +216,33 @@ spec:
 #    - Done!
 
 # That's it. Don't overcomplicate it.
+
+# =================== STARTUP PROBE - FOR SLOW APPS ===================
+
+# Problem: Java app takes 5 minutes to start, but liveness probe kills it in 30s
+# Solution: Startup probe replaces liveness probe during startup
+
+# Example for slow-starting application:
+# startupProbe:
+#   httpGet:
+#     path: /health
+#     port: 8080
+#   periodSeconds: 10
+#   failureThreshold: 30    # 30 × 10s = 5 minutes allowed
+# 
+# livenessProbe:
+#   httpGet:
+#     path: /health  
+#     port: 8080
+#   periodSeconds: 10
+#   failureThreshold: 3     # Normal 30s timeout AFTER startup
+
+# Timeline:
+# 0-300s:  Startup probe active, liveness probe DISABLED
+# 300s+:   Startup probe succeeds → disabled forever, liveness probe takes over
+
+# When to use startup probe:
+# - Legacy applications with long initialization
+# - Database systems
+# - Machine learning model loading
+# - When liveness probe causes restart loops during startup

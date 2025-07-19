@@ -1,0 +1,118 @@
+# WHY: Understanding what each probe failure does
+# PROBLEM: Need to see the difference between readiness vs liveness failures
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probe-demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: probe-demo
+  template:
+    metadata:
+      labels:
+        app: probe-demo
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        
+        # LIVENESS PROBE - Container restart when fails
+        livenessProbe:
+          httpGet:
+            path: /liveness  # Different endpoint for demo
+            port: 80
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          failureThreshold: 3
+          timeoutSeconds: 5
+          
+        # READINESS PROBE - Traffic removal when fails  
+        readinessProbe:
+          httpGet:
+            path: /readiness  # Different endpoint for demo
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 3
+          timeoutSeconds: 3
+
+---
+# Service to demonstrate traffic routing
+apiVersion: v1
+kind: Service
+metadata:
+  name: probe-demo-service
+spec:
+  selector:
+    app: probe-demo
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# =================== FAILURE SCENARIOS ===================
+
+# SCENARIO 1: Readiness Probe Fails
+# What happens:
+# 1. Pod removed from service endpoints
+# 2. No traffic sent to this pod
+# 3. Pod stays running (no restart)
+# 4. Other pods handle traffic
+# 
+# Check with:
+# kubectl get endpoints probe-demo-service  # Missing pod IP
+# kubectl describe pod <pod-name>           # Shows readiness failure events
+
+# SCENARIO 2: Liveness Probe Fails  
+# What happens:
+# 1. Container gets killed
+# 2. New container starts in same pod
+# 3. Pod name and IP stay the same
+# 4. RESTART count increases
+#
+# Check with:
+# kubectl get pods                          # RESTARTS column increases
+# kubectl describe pod <pod-name>           # Shows liveness failure + restart
+
+# SCENARIO 3: Both Probes Fail
+# What happens:
+# 1. Readiness fails → No traffic
+# 2. Liveness fails → Container restart
+# 3. New container starts
+# 4. Readiness passes → Gets traffic again
+
+# =================== TESTING FAILURES ===================
+
+# Simulate readiness failure (remove pod from service):
+# kubectl exec -it <pod-name> -- rm /usr/share/nginx/html/readiness
+
+# Simulate liveness failure (trigger restart):
+# kubectl exec -it <pod-name> -- rm /usr/share/nginx/html/liveness
+
+# Watch the effects:
+# kubectl get pods -w                       # Watch RESTARTS and READY status
+# kubectl get endpoints probe-demo-service -w  # Watch endpoint changes
+
+# =================== KEY INSIGHTS ===================
+
+# Liveness Probe = Nuclear Option
+# - Kills and restarts container
+# - Use ONLY when restart actually fixes the problem
+# - Container restart, NOT pod restart (same IP, same pod name)
+
+# Readiness Probe = Traffic Control  
+# - Gentle removal from load balancer
+# - Pod stays alive, might recover on its own
+# - Essential for zero-downtime deployments
+
+# Probe Independence
+# - Each probe serves different purpose
+# - Readiness controls service traffic
+# - Liveness controls container lifecycle
+# - Both can fail simultaneously with different effects

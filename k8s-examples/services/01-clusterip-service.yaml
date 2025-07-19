@@ -1,6 +1,6 @@
-# ClusterIP Service - Internal Only
-# Accessible only from within the cluster
-# Gets internal IP like 10.105.235.202
+# WHY: Need internal communication between services
+# PROBLEM: Pods have changing IPs, need stable endpoint
+# SOLUTION: ClusterIP provides fixed internal address
 apiVersion: v1
 kind: Service
 metadata:

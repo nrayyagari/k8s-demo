@@ -1,5 +1,6 @@
-# Basic Deployment Example
-# Creates 5 replicas of nginx pods with random names
+# WHY: You want your app to run reliably
+# PROBLEM: Single container fails, entire app goes down
+# SOLUTION: Deployment creates multiple copies across different nodes
 apiVersion: apps/v1
 kind: Deployment
 metadata:

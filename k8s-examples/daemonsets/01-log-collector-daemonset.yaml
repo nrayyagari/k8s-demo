@@ -1,6 +1,6 @@
-# DaemonSet Example - Log Collector
-# Runs exactly one pod on each node
-# Useful for node-level services like logging, monitoring, networking
+# WHY: Need monitoring/logging on every single node
+# PROBLEM: Manual deployment to each node is painful
+# SOLUTION: DaemonSet automatically runs one pod per node
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:

@@ -1,0 +1,53 @@
+# WHY: Show all probe configuration options
+# PROBLEM: Need different timeouts for different scenarios
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: detailed-probe-example
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: detailed-probe-example
+  template:
+    metadata:
+      labels:
+        app: detailed-probe-example
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        
+        # READINESS: "Can I serve users?"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5   # Start checking after 5s
+          periodSeconds: 5         # Check every 5s (frequent)
+          timeoutSeconds: 3        # 3s to respond
+          failureThreshold: 2      # 2 failures = remove from traffic
+          successThreshold: 1      # 1 success = ready again
+          
+        # LIVENESS: "Am I alive or stuck?"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30  # Wait 30s (give app time to start)
+          periodSeconds: 30        # Check every 30s (less frequent)
+          timeoutSeconds: 5        # 5s to respond
+          failureThreshold: 3      # 3 failures = restart container
+          
+        # STARTUP: "Give me time to start up"
+        startupProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 0
+          periodSeconds: 10        # Check every 10s
+          timeoutSeconds: 3
+          failureThreshold: 18     # 18 * 10s = 3 minutes max startup time

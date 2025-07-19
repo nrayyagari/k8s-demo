@@ -1,0 +1,52 @@
+# WHY: Good names make debugging easier
+# PROBLEM: Generic names like "ingress-1" tell you nothing
+# SOLUTION: Name based on purpose, scope, or environment
+
+# PATTERN: [purpose]-[scope]-ingress
+
+# Example 1: Purpose-based naming
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-web-ingress  # What: frontend, How: web traffic
+spec:
+  rules:
+  - host: myapp.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-service
+            port: 
+              number: 80
+---
+# Example 2: Environment-based naming
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: staging-api-ingress  # Where: staging, What: API
+spec:
+  rules:
+  - host: staging-api.myapp.com
+---
+# Example 3: Feature-based naming  
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: payment-gateway-ingress  # Feature: payments
+spec:
+  rules:
+  - host: pay.myapp.com
+
+# GOOD NAMES: Tell you purpose immediately
+# - frontend-web-ingress
+# - api-gateway-ingress  
+# - admin-dashboard-ingress
+# - public-site-ingress
+
+# BAD NAMES: Tell you nothing
+# - my-ingress
+# - ingress-1
+# - web-ingress (too vague)

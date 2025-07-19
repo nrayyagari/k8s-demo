@@ -1,0 +1,44 @@
+# WHY: Users expect HTTPS for security
+# PROBLEM: Need SSL certificates and HTTPS handling
+# SOLUTION: Ingress terminates SSL, forwards HTTP to services
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secure-web-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"  # Force HTTPS
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - secure.myapp.local
+    secretName: tls-secret  # Contains SSL certificate
+  rules:
+  - host: secure.myapp.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80
+---
+# TLS Certificate Secret (self-signed for demo)
+# In production, use cert-manager or external certs
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls-secret
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # Base64 encoded cert
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t  # Base64 encoded key
+
+# To create your own self-signed cert:
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#   -keyout tls.key -out tls.crt -subj "/CN=secure.myapp.local"
+# kubectl create secret tls tls-secret --cert=tls.crt --key=tls.key

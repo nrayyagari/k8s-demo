@@ -1,6 +1,6 @@
-# SIMPLE Services - Connect to Your App
-# Problem: Pods have changing IP addresses
-# Solution: Service provides stable way to reach your app
+# WHY: Need stable way to reach your app
+# PROBLEM: Pod IPs change when pods restart
+# SOLUTION: Service provides fixed endpoint that routes to healthy pods
 
 # =================== BASIC SERVICE ===================
 
