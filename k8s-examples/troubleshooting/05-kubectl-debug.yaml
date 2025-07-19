@@ -1,0 +1,410 @@
+# kubectl debug: Advanced Debugging with Ephemeral Containers
+# WHY: Some debugging requires tools not available in the original container
+# PATTERN: Attach debug containers → Investigate with full toolset → Solve issues
+
+---
+# Scenario 1: Minimal container without debugging tools
+apiVersion: v1
+kind: Pod
+metadata:
+  name: minimal-app
+  labels:
+    scenario: minimal-debug
+spec:
+  containers:
+  - name: app
+    image: gcr.io/distroless/java:11  # Distroless image - no shell, no debug tools
+    command: ["java"]
+    args: ["-jar", "/app/app.jar"]
+    # Simulate a Java app that's having issues
+    env:
+    - name: JAVA_OPTS
+      value: "-Xms64m -Xmx128m"
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+  # No shell, no debugging tools available
+
+---
+# Scenario 2: Container with networking issues
+apiVersion: v1
+kind: Pod
+metadata:
+  name: network-issue-pod
+  labels:
+    scenario: network-debug
+spec:
+  containers:
+  - name: app
+    image: alpine:3.16
+    command: ["sh", "-c"]
+    args:
+    - |
+      # Start a simple HTTP server that has connectivity issues
+      echo "Starting server with network issues..."
+      # Bind to localhost only (not accessible from outside)
+      python3 -m http.server 8080 --bind 127.0.0.1 &
+      
+      # Also simulate DNS issues
+      echo "127.0.0.1 broken-dns.local" >> /etc/hosts
+      
+      # Keep container running
+      while true; do
+        echo "Server running on localhost:8080 (not accessible externally)"
+        sleep 30
+      done
+    ports:
+    - containerPort: 8080
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# Scenario 3: File system permission issues
+apiVersion: v1
+kind: Pod
+metadata:
+  name: permission-issue-pod
+  labels:
+    scenario: permission-debug
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  containers:
+  - name: app
+    image: busybox:1.35
+    command: ["sh", "-c"]
+    args:
+    - |
+      echo "Starting app with permission issues..."
+      
+      # Try to write to a directory we don't have access to
+      mkdir -p /app/data
+      chmod 700 /app/data
+      chown root:root /app/data  # Won't work due to security context
+      
+      # Try to create files in restricted locations
+      while true; do
+        echo "Attempting to write to restricted locations..."
+        
+        # This will fail due to permissions
+        echo "test" > /app/data/test.txt 2>/dev/null || echo "Permission denied writing to /app/data"
+        echo "test" > /etc/test.txt 2>/dev/null || echo "Permission denied writing to /etc"
+        
+        sleep 10
+      done
+    volumeMounts:
+    - name: app-data
+      mountPath: /app/data
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "25m"
+  volumes:
+  - name: app-data
+    emptyDir: {}
+
+---
+# Scenario 4: Memory leak detection scenario
+apiVersion: v1
+kind: Pod
+metadata:
+  name: memory-leak-pod
+  labels:
+    scenario: memory-debug
+spec:
+  containers:
+  - name: app
+    image: node:16-alpine
+    command: ["node", "-e"]
+    args:
+    - |
+      console.log('Starting memory leak simulation...');
+      
+      // Simulate memory leak
+      let leakyArray = [];
+      let counter = 0;
+      
+      setInterval(() => {
+        // Add objects to array without removing them
+        for (let i = 0; i < 1000; i++) {
+          leakyArray.push({
+            id: counter++,
+            data: 'x'.repeat(1000),  // 1KB per object
+            timestamp: new Date()
+          });
+        }
+        
+        console.log(`Memory usage: ${process.memoryUsage().heapUsed / 1024 / 1024} MB, Array size: ${leakyArray.length}`);
+        
+        // Simulate some processing
+        if (leakyArray.length > 50000) {
+          console.log('Memory pressure detected, but not releasing memory...');
+        }
+      }, 1000);
+      
+      // Keep process alive
+      process.on('SIGTERM', () => {
+        console.log('Received SIGTERM, shutting down...');
+        process.exit(0);
+      });
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"  # Will eventually hit this limit
+        cpu: "200m"
+
+---
+# Scenario 5: Process investigation scenario
+apiVersion: v1
+kind: Pod
+metadata:
+  name: process-issue-pod
+  labels:
+    scenario: process-debug
+spec:
+  containers:
+  - name: app
+    image: ubuntu:20.04
+    command: ["bash", "-c"]
+    args:
+    - |
+      echo "Starting application with process issues..."
+      
+      # Install some basic tools
+      apt-get update -qq && apt-get install -y -qq curl wget procps
+      
+      # Start multiple processes that might be problematic
+      
+      # Process 1: High CPU consumer
+      bash -c 'while true; do echo "cpu burner" > /dev/null; done' &
+      
+      # Process 2: Zombie process creator
+      bash -c '
+        while true; do
+          bash -c "sleep 1" &
+          sleep 5
+          # Parent doesn\t wait for child, creating zombies
+        done
+      ' &
+      
+      # Process 3: File descriptor leak
+      bash -c '
+        while true; do
+          exec 3< /dev/null  # Open file descriptor
+          # Never close it - FD leak
+          sleep 2
+        done
+      ' &
+      
+      # Main process
+      echo "All problematic processes started"
+      while true; do
+        echo "Main process running... ($(date))"
+        echo "Load average: $(cat /proc/loadavg)"
+        sleep 30
+      done
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "500m"
+
+---
+# Service for network testing
+apiVersion: v1
+kind: Service
+metadata:
+  name: network-issue-service
+spec:
+  selector:
+    scenario: network-debug
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+# kubectl debug scenarios and commands:
+#
+# =====================================
+# SCENARIO 1: DEBUG MINIMAL CONTAINER
+# =====================================
+#
+# 1. Apply the configurations:
+#    kubectl apply -f 05-kubectl-debug.yaml
+#
+# 2. Try to debug the distroless container (will fail):
+#    kubectl exec -it minimal-app -- /bin/sh
+#    # Error: executable file not found - no shell available
+#
+# 3. Use kubectl debug to attach debugging tools:
+#    kubectl debug minimal-app -it --image=busybox --target=app
+#    # This creates an ephemeral container with busybox tools
+#
+# 4. Inside the debug container, investigate:
+#    ps aux                    # See processes from target container
+#    netstat -tlnp            # Check network connections
+#    ls -la /proc/1/fd        # Check file descriptors
+#    cat /proc/1/environ      # Check environment variables
+#    
+# 5. Advanced debugging with more tools:
+#    kubectl debug minimal-app -it --image=nicolaka/netshoot --target=app
+#    # Now you have network debugging tools, tcpdump, etc.
+#
+# =====================================
+# SCENARIO 2: DEBUG NETWORK ISSUES
+# =====================================
+#
+# 1. Test connectivity (will fail):
+#    kubectl run test-client --image=busybox -it --rm -- wget -T 5 -qO- http://network-issue-service
+#
+# 2. Debug the networking in the pod:
+#    kubectl debug network-issue-pod -it --image=nicolaka/netshoot
+#    
+# 3. Inside debug container:
+#    # Check if service is actually running
+#    netstat -tlnp
+#    ss -tlnp
+#    
+#    # Check what's listening
+#    lsof -i :8080
+#    
+#    # Test local connectivity
+#    curl localhost:8080
+#    curl 127.0.0.1:8080
+#    
+#    # Check DNS resolution
+#    nslookup network-issue-service
+#    
+#    # Test from pod IP (should fail - bound to localhost only)
+#    curl $(hostname -i):8080
+#
+# 4. Copy and modify the pod to fix the issue:
+#    kubectl debug network-issue-pod --copy-to=network-fixed --image=alpine:3.16 -- sh -c "python3 -m http.server 8080 --bind 0.0.0.0"
+#
+# =====================================
+# SCENARIO 3: DEBUG PERMISSION ISSUES
+# =====================================
+#
+# 1. Check logs to see permission errors:
+#    kubectl logs permission-issue-pod
+#
+# 2. Debug file permissions:
+#    kubectl debug permission-issue-pod -it --image=busybox
+#    
+# 3. Inside debug container (runs as same user):
+#    id                              # Check current user
+#    ls -la /app/data               # Check directory permissions
+#    ps aux                         # Check processes
+#    cat /proc/1/status | grep Uid # Check process user
+#    
+# 4. Debug with elevated privileges:
+#    kubectl debug permission-issue-pod -it --image=busybox --target=app --privileged
+#    
+# 5. Inside privileged debug container:
+#    ls -la /app/data
+#    chown -R 1000:1000 /app/data  # Fix ownership
+#    chmod 755 /app/data           # Fix permissions
+#
+# =====================================
+# SCENARIO 4: DEBUG MEMORY LEAKS
+# =====================================
+#
+# 1. Monitor memory usage:
+#    kubectl top pod memory-leak-pod --containers
+#    
+# 2. Debug memory usage patterns:
+#    kubectl debug memory-leak-pod -it --image=nicolaka/netshoot
+#    
+# 3. Inside debug container:
+#    # Check memory usage
+#    cat /proc/meminfo
+#    free -h
+#    
+#    # Check the Node.js process specifically
+#    PID=$(pgrep node)
+#    cat /proc/$PID/status | grep -i mem
+#    cat /proc/$PID/smaps | grep -i rss | awk '{sum+=$2} END {print "Total RSS: " sum " kB"}'
+#    
+#    # Monitor memory over time
+#    watch -n 2 "cat /proc/$PID/status | grep VmRSS"
+#
+# 4. Generate heap dump (if debugging Node.js):
+#    kubectl debug memory-leak-pod -it --image=node:16-alpine --target=app
+#    # Inside debug container:
+#    kill -USR2 1  # Send signal to Node.js process for heap dump
+#
+# =====================================
+# SCENARIO 5: DEBUG PROCESS ISSUES
+# =====================================
+#
+# 1. Debug process behavior:
+#    kubectl debug process-issue-pod -it --image=ubuntu:20.04
+#    
+# 2. Inside debug container:
+#    # Check all processes
+#    ps auxf
+#    
+#    # Check for zombie processes
+#    ps aux | grep -i zombie
+#    ps aux | awk '$8 ~ /^Z/ { print }'
+#    
+#    # Check CPU usage by process
+#    top -n 1
+#    
+#    # Check file descriptor usage
+#    lsof | wc -l
+#    cat /proc/sys/fs/file-nr
+#    
+#    # Check load average
+#    cat /proc/loadavg
+#    uptime
+#    
+#    # Check individual process details
+#    PID=$(pgrep -f "cpu burner")
+#    cat /proc/$PID/status
+#    ls -la /proc/$PID/fd | wc -l  # Count file descriptors
+#
+# =====================================
+# ADVANCED KUBECTL DEBUG TECHNIQUES
+# =====================================
+#
+# 1. Debug with custom image and specific tools:
+#    kubectl debug <pod> -it --image=registry.k8s.io/pause:3.8 --target=<container> -- /bin/sh
+#
+# 2. Debug and share process namespace:
+#    kubectl debug <pod> -it --image=busybox --target=<container> --share-processes
+#
+# 3. Create debug copy of pod with modifications:
+#    kubectl debug <pod> --copy-to=<debug-pod> --image=<new-image> --container=<container>
+#
+# 4. Debug with privileged access:
+#    kubectl debug <pod> -it --image=busybox --privileged
+#
+# 5. Debug node issues by creating pod on specific node:
+#    kubectl debug node/<node-name> -it --image=busybox
+#
+# 6. Set environment variables in debug container:
+#    kubectl debug <pod> -it --image=busybox --env="DEBUG=true" --env="LOG_LEVEL=debug"
+#
+# 7. Debug with different security context:
+#    kubectl debug <pod> -it --image=busybox --as-root
+#
+# 8. Profile running applications:
+#    kubectl debug <pod> -it --image=brendangregg/perf --privileged --target=<container>
+#    # Then run: perf top -p <target-pid>
+#
+# Cleanup:
+# kubectl delete pod minimal-app network-issue-pod permission-issue-pod memory-leak-pod process-issue-pod
+# kubectl delete service network-issue-service

@@ -261,14 +261,37 @@ kubectl describe node <node-name> | grep -A 10 "Allocated resources"
 
 ## Advanced Debugging Techniques
 
-### Using Debug Containers (K8s 1.23+)
+### Using kubectl debug (K8s 1.23+)
+
+#### Why kubectl debug?
+**Problem**: Production containers often lack debugging tools (distroless images, minimal containers)  
+**Solution**: Attach ephemeral containers with full debugging toolset
+
+#### Basic Debug Patterns
 ```bash
 # Attach debug container to running pod
 kubectl debug <pod-name> -it --image=busybox --target=<container-name>
 
-# Create debug copy of pod
-kubectl debug <pod-name> -it --copy-to=<debug-pod-name> --container=debug
+# Debug with network tools
+kubectl debug <pod-name> -it --image=nicolaka/netshoot --target=<container>
+
+# Create debug copy of pod with modifications
+kubectl debug <pod-name> --copy-to=<debug-pod-name> --image=<new-image>
+
+# Debug with elevated privileges
+kubectl debug <pod-name> -it --image=busybox --privileged
+
+# Debug node issues
+kubectl debug node/<node-name> -it --image=busybox
 ```
+
+#### When to Use kubectl debug
+- **Distroless containers**: No shell or tools available
+- **Minimal images**: Missing debugging utilities  
+- **Permission issues**: Need elevated privileges
+- **Network debugging**: Need specialized network tools
+- **Process analysis**: Need to inspect running processes
+- **Memory debugging**: Need profiling tools
 
 ### Network Policy Testing
 ```bash
@@ -436,6 +459,15 @@ kubectl run dnstest --image=busybox -it --rm -- nslookup kubernetes.default
 # Test connectivity
 kubectl run nettest --image=busybox -it --rm -- wget -T 5 -qO- http://<service>
 ```
+
+## Files in This Directory
+
+1. **SIMPLE-DEBUG.yaml** - Basic troubleshooting starter examples
+2. **01-service-debugging.yaml** - Service connectivity issues and solutions  
+3. **02-pod-startup-issues.yaml** - Pod startup failures and debugging
+4. **03-networking-dns.yaml** - Network and DNS troubleshooting scenarios
+5. **04-resource-debugging.yaml** - Resource pressure and performance issues
+6. **05-kubectl-debug.yaml** - Advanced debugging with ephemeral containers
 
 ## Real-World Debugging Impact
 
