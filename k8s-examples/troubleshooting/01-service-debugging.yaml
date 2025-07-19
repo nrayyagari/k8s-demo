@@ -1,0 +1,314 @@
+# Service Debugging Scenarios
+# WHY: Services are the most common failure point in K8s networking
+# PATTERN: Create broken service scenarios → Debug step by step
+
+---
+# Scenario 1: Service with no endpoints (selector mismatch)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-web-app
+  labels:
+    scenario: selector-mismatch
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: web-app
+        version: v1
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# BROKEN: Service selector doesn't match pod labels
+apiVersion: v1
+kind: Service
+metadata:
+  name: broken-web-service
+  labels:
+    scenario: selector-mismatch
+spec:
+  selector:
+    app: web-app
+    version: v2  # ❌ WRONG! Pods have version: v1
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+# Debugging commands for this scenario:
+# kubectl get svc broken-web-service
+# kubectl describe svc broken-web-service  # Look at Endpoints: <none>
+# kubectl get endpoints broken-web-service  # Should show no endpoints
+# kubectl get pods --show-labels | grep web-app  # Compare with service selector
+
+---
+# Scenario 2: Service with wrong port configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: port-mismatch-app
+  labels:
+    scenario: port-mismatch
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: port-app
+  template:
+    metadata:
+      labels:
+        app: port-app
+    spec:
+      containers:
+      - name: nodejs
+        image: node:16-alpine
+        command: ["node", "-e"]
+        args:
+        - |
+          const http = require('http');
+          const server = http.createServer((req, res) => {
+            res.writeHead(200, {'Content-Type': 'text/plain'});
+            res.end('Hello from port 3000!');
+          });
+          server.listen(3000, () => console.log('Server running on port 3000'));
+        ports:
+        - containerPort: 3000  # App runs on port 3000
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# BROKEN: Service targeting wrong port
+apiVersion: v1
+kind: Service
+metadata:
+  name: port-mismatch-service
+  labels:
+    scenario: port-mismatch
+spec:
+  selector:
+    app: port-app
+  ports:
+  - port: 80
+    targetPort: 8080  # ❌ WRONG! App listens on 3000
+  type: ClusterIP
+
+# Debugging commands:
+# kubectl get endpoints port-mismatch-service  # Shows endpoints exist
+# kubectl run debug --image=busybox -it --rm -- /bin/sh
+# wget -qO- http://port-mismatch-service  # Times out
+# kubectl describe svc port-mismatch-service  # Check port config
+# kubectl describe pod <pod-name> | grep Port  # Check actual container port
+
+---
+# Scenario 3: Service exists but pods not ready
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unready-app
+  labels:
+    scenario: pods-not-ready
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: unready-app
+  template:
+    metadata:
+      labels:
+        app: unready-app
+    spec:
+      containers:
+      - name: slow-starter
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        # PROBLEMATIC: Readiness probe fails initially
+        readinessProbe:
+          httpGet:
+            path: /nonexistent-path  # ❌ This path doesn't exist
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unready-service
+  labels:
+    scenario: pods-not-ready
+spec:
+  selector:
+    app: unready-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+# Debugging commands:
+# kubectl get pods | grep unready-app  # Shows Running but 0/1 Ready
+# kubectl describe pod <pod-name> | grep -A 10 Conditions
+# kubectl describe pod <pod-name> | grep -A 10 "Readiness"
+# kubectl get endpoints unready-service  # No endpoints due to unready pods
+
+---
+# Scenario 4: NetworkPolicy blocking traffic
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: isolated-app
+  namespace: default
+  labels:
+    scenario: network-policy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: isolated-app
+  template:
+    metadata:
+      labels:
+        app: isolated-app
+        tier: backend
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: isolated-service
+  namespace: default
+  labels:
+    scenario: network-policy
+spec:
+  selector:
+    app: isolated-app
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# PROBLEMATIC: Restrictive NetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrictive-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      tier: backend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          tier: frontend  # Only frontend pods can access
+    ports:
+    - protocol: TCP
+      port: 80
+
+# Debugging commands:
+# kubectl get networkpolicies
+# kubectl describe networkpolicy restrictive-policy
+# kubectl run debug --image=busybox -it --rm -- wget -qO- http://isolated-service
+# kubectl run debug --image=busybox -it --rm --labels="tier=frontend" -- wget -qO- http://isolated-service
+
+---
+# Debug tools pod for testing connectivity
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-tools
+  labels:
+    app: debug-tools
+spec:
+  containers:
+  - name: tools
+    image: nicolaka/netshoot:latest
+    command: ["sleep", "3600"]
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# Test client for service connectivity
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-client
+  labels:
+    tier: frontend
+spec:
+  containers:
+  - name: client
+    image: busybox:1.35
+    command: ["sleep", "3600"]
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "25m"
+
+# Complete debugging workflow:
+#
+# 1. Apply all scenarios:
+#    kubectl apply -f 01-service-debugging.yaml
+#
+# 2. Test each broken service:
+#    kubectl get svc
+#    kubectl get endpoints
+#
+# 3. Debug selector mismatch:
+#    kubectl describe svc broken-web-service
+#    kubectl get pods --show-labels | grep web-app
+#    # Fix: Update service selector to version: v1
+#
+# 4. Debug port mismatch:
+#    kubectl exec -it test-client -- wget -T 5 -qO- http://port-mismatch-service
+#    kubectl describe svc port-mismatch-service
+#    # Fix: Change targetPort to 3000
+#
+# 5. Debug unready pods:
+#    kubectl get pods | grep unready
+#    kubectl describe pod <unready-pod> | grep -A 5 Readiness
+#    # Fix: Change readinessProbe path to "/" or remove probe
+#
+# 6. Debug network policy:
+#    kubectl exec -it test-client -- wget -T 5 -qO- http://isolated-service
+#    kubectl get networkpolicies
+#    # Fix: Add tier: frontend label to test-client or modify policy
+#
+# 7. Working service test:
+#    kubectl run working-app --image=nginx --port=80
+#    kubectl expose pod working-app --port=80
+#    kubectl exec -it test-client -- wget -qO- http://working-app

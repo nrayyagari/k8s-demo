@@ -1,0 +1,378 @@
+# Pod Startup Issues & Debugging
+# WHY: Pod startup failures are the most common K8s issues
+# PATTERN: Create various failure scenarios → Practice systematic debugging
+
+---
+# Scenario 1: ImagePullBackOff - Image doesn't exist
+apiVersion: v1
+kind: Pod
+metadata:
+  name: image-not-found
+  labels:
+    scenario: image-pull-error
+spec:
+  containers:
+  - name: nonexistent
+    image: nginx:nonexistent-tag-12345  # ❌ This tag doesn't exist
+    ports:
+    - containerPort: 80
+
+# Debug commands:
+# kubectl get pods | grep image-not-found
+# kubectl describe pod image-not-found | grep -A 10 Events
+# kubectl describe pod image-not-found | grep -A 5 "Failed to pull image"
+
+---
+# Scenario 2: CrashLoopBackOff - Container exits immediately
+apiVersion: v1
+kind: Pod
+metadata:
+  name: crash-loop-pod
+  labels:
+    scenario: crash-loop
+spec:
+  containers:
+  - name: failing-app
+    image: busybox:1.35
+    command: ["sh", "-c"]
+    args:
+    - |
+      echo "Starting application..."
+      echo "Simulating startup failure..."
+      exit 1  # ❌ Always exits with error
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "25m"
+
+# Debug commands:
+# kubectl get pods | grep crash-loop
+# kubectl logs crash-loop-pod
+# kubectl logs crash-loop-pod --previous  # Previous crash logs
+# kubectl describe pod crash-loop-pod | grep "Exit Code"
+
+---
+# Scenario 3: Pending - Resource constraints
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-starved
+  labels:
+    scenario: resource-pending
+spec:
+  containers:
+  - name: hungry-app
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "100Gi"  # ❌ Requesting way too much memory
+        cpu: "50"        # ❌ Requesting 50 CPU cores
+      limits:
+        memory: "100Gi"
+        cpu: "50"
+
+# Debug commands:
+# kubectl get pods | grep resource-starved
+# kubectl describe pod resource-starved | grep -A 10 Events
+# kubectl describe nodes | grep -A 10 "Allocated resources"
+# kubectl top nodes
+
+---
+# Scenario 4: Pending - Node selector constraints
+apiVersion: v1
+kind: Pod
+metadata:
+  name: scheduling-constrained
+  labels:
+    scenario: scheduling-pending
+spec:
+  nodeSelector:
+    disktype: nvme-super-fast  # ❌ No node has this label
+    gpu: tesla-v100            # ❌ No node has this label
+  containers:
+  - name: picky-app
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+# Debug commands:
+# kubectl get pods | grep scheduling-constrained
+# kubectl describe pod scheduling-constrained | grep -A 10 "Node-Selectors"
+# kubectl get nodes --show-labels
+# kubectl describe pod scheduling-constrained | grep -A 10 Events
+
+---
+# Scenario 5: Init container failure
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-container-failure
+  labels:
+    scenario: init-failure
+spec:
+  initContainers:
+  - name: failing-init
+    image: busybox:1.35
+    command: ["sh", "-c"]
+    args:
+    - |
+      echo "Init container starting..."
+      echo "Checking dependencies..."
+      echo "Dependency check failed!"
+      exit 1  # ❌ Init container fails
+  containers:
+  - name: main-app
+    image: nginx:1.21
+    ports:
+    - containerPort: 80
+
+# Debug commands:
+# kubectl get pods | grep init-container-failure
+# kubectl describe pod init-container-failure
+# kubectl logs init-container-failure -c failing-init
+
+---
+# Scenario 6: ConfigMap/Secret not found
+apiVersion: v1
+kind: Pod
+metadata:
+  name: missing-config
+  labels:
+    scenario: config-missing
+spec:
+  containers:
+  - name: app
+    image: nginx:1.21
+    env:
+    - name: CONFIG_VALUE
+      valueFrom:
+        configMapKeyRef:
+          name: nonexistent-config  # ❌ ConfigMap doesn't exist
+          key: config-key
+    - name: SECRET_VALUE
+      valueFrom:
+        secretKeyRef:
+          name: nonexistent-secret   # ❌ Secret doesn't exist
+          key: secret-key
+    volumeMounts:
+    - name: config-volume
+      mountPath: /etc/config
+  volumes:
+  - name: config-volume
+    configMap:
+      name: nonexistent-config     # ❌ ConfigMap doesn't exist
+
+# Debug commands:
+# kubectl get pods | grep missing-config
+# kubectl describe pod missing-config | grep -A 10 Events
+# kubectl get configmaps,secrets
+# kubectl describe pod missing-config | grep -A 10 Volumes
+
+---
+# Scenario 7: Liveness probe failure
+apiVersion: v1
+kind: Pod
+metadata:
+  name: liveness-failure
+  labels:
+    scenario: liveness-probe
+spec:
+  containers:
+  - name: app
+    image: nginx:1.21
+    ports:
+    - containerPort: 80
+    livenessProbe:
+      httpGet:
+        path: /nonexistent-health-check  # ❌ This endpoint doesn't exist
+        port: 80
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      failureThreshold: 3
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+# Debug commands:
+# kubectl get pods | grep liveness-failure
+# kubectl describe pod liveness-failure | grep -A 10 "Liveness"
+# kubectl logs liveness-failure
+# kubectl describe pod liveness-failure | grep -A 10 Events
+
+---
+# Scenario 8: Volume mount issues
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-mount-issue
+  labels:
+    scenario: volume-issue
+spec:
+  containers:
+  - name: app
+    image: nginx:1.21
+    volumeMounts:
+    - name: persistent-storage
+      mountPath: /data
+    - name: config-vol
+      mountPath: /etc/nginx/nginx.conf
+      subPath: nginx.conf
+  volumes:
+  - name: persistent-storage
+    persistentVolumeClaim:
+      claimName: nonexistent-pvc  # ❌ PVC doesn't exist
+  - name: config-vol
+    configMap:
+      name: nginx-config          # ❌ ConfigMap doesn't exist
+
+# Debug commands:
+# kubectl get pods | grep volume-mount-issue
+# kubectl describe pod volume-mount-issue | grep -A 10 Events
+# kubectl get pvc
+# kubectl describe pod volume-mount-issue | grep -A 10 Volumes
+
+---
+# Scenario 9: Security context issues
+apiVersion: v1
+kind: Pod
+metadata:
+  name: security-context-issue
+  labels:
+    scenario: security-issue
+spec:
+  securityContext:
+    runAsUser: 0        # Running as root
+    runAsGroup: 0
+    fsGroup: 0
+  containers:
+  - name: app
+    image: nginx:1.21
+    securityContext:
+      allowPrivilegeEscalation: true
+      privileged: true  # ❌ Might be blocked by security policies
+      capabilities:
+        add: ["SYS_ADMIN", "NET_ADMIN"]
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+# Debug commands (if Pod Security Standards are enforced):
+# kubectl get pods | grep security-context-issue
+# kubectl describe pod security-context-issue | grep -A 10 Events
+# kubectl get podsecuritypolicy  # If PSPs are used
+# kubectl describe namespace default | grep -A 10 Labels  # Check for pod security labels
+
+---
+# Debugging tools pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-toolkit
+  labels:
+    app: debug-tools
+spec:
+  containers:
+  - name: toolkit
+    image: nicolaka/netshoot:latest
+    command: ["sleep", "3600"]
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+    securityContext:
+      capabilities:
+        add: ["NET_ADMIN", "NET_RAW"]
+
+---
+# Working pod for comparison
+apiVersion: v1
+kind: Pod
+metadata:
+  name: working-reference
+  labels:
+    scenario: working-example
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    ports:
+    - containerPort: 80
+    readinessProbe:
+      httpGet:
+        path: /
+        port: 80
+      initialDelaySeconds: 5
+      periodSeconds: 5
+    livenessProbe:
+      httpGet:
+        path: /
+        port: 80
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+
+# Complete debugging workflow:
+#
+# 1. Apply all scenarios:
+#    kubectl apply -f 02-pod-startup-issues.yaml
+#
+# 2. Check overall pod status:
+#    kubectl get pods
+#    kubectl get events --sort-by='.lastTimestamp' | tail -20
+#
+# 3. Debug each scenario systematically:
+#
+#    ImagePullBackOff:
+#    kubectl describe pod image-not-found | grep -A 5 "Failed to pull"
+#    # Fix: Use correct image tag
+#
+#    CrashLoopBackOff:
+#    kubectl logs crash-loop-pod --previous
+#    kubectl describe pod crash-loop-pod | grep "Exit Code"
+#    # Fix: Change command to not exit with error
+#
+#    Resource Pending:
+#    kubectl describe pod resource-starved | grep -A 10 Events
+#    kubectl top nodes
+#    # Fix: Reduce resource requests to reasonable values
+#
+#    Scheduling Constraints:
+#    kubectl describe pod scheduling-constrained | grep -A 10 "Node-Selectors"
+#    kubectl get nodes --show-labels
+#    # Fix: Remove or correct nodeSelector
+#
+#    Init Container Failure:
+#    kubectl logs init-container-failure -c failing-init
+#    # Fix: Fix init container command
+#
+#    Missing Config:
+#    kubectl describe pod missing-config | grep -A 10 Events
+#    kubectl get configmaps,secrets
+#    # Fix: Create required ConfigMaps/Secrets
+#
+#    Liveness Probe:
+#    kubectl describe pod liveness-failure | grep -A 10 "Liveness"
+#    # Fix: Correct liveness probe path
+#
+#    Volume Issues:
+#    kubectl describe pod volume-mount-issue | grep -A 10 Volumes
+#    kubectl get pvc
+#    # Fix: Create required PVC and ConfigMap
+#
+# 4. Create fixes:
+#    kubectl patch pod <pod-name> --type='json' -p='[{"op": "replace", "path": "/spec/containers/0/image", "value": "nginx:1.21"}]'
+#    # Or delete and recreate with fixed YAML
+#
+# 5. Verify working pod:
+#    kubectl get pod working-reference
+#    kubectl logs working-reference

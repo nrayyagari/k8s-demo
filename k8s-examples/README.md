@@ -22,6 +22,7 @@ k8s-examples/
 ├── autoscaling/    # Horizontal Pod Autoscaler examples
 ├── rbac/           # Roles, ClusterRoles, and RBAC examples
 ├── scheduling/     # Pod scheduling, taints/tolerations, affinity/anti-affinity
+├── troubleshooting/ # Debugging scenarios and systematic troubleshooting
 └── README.md       # This file
 ```
 
@@ -56,6 +57,10 @@ k8s-examples/
 **7. Where should my pods run?** → **Scheduling (Taints, Affinity)**
 - Problem: Default scheduler doesn't understand business needs
 - Solution: Control pod placement for performance and availability
+
+**8. My application isn't working - how do I debug?** → **Troubleshooting**
+- Problem: Complex systems fail in subtle ways
+- Solution: Systematic debugging approach using the right tools
 
 ### The 90/10 Rule
 
@@ -103,11 +108,17 @@ kubectl apply -f rbac/SIMPLE-RBAC.yaml
 kubectl apply -f scheduling/SIMPLE-SCHEDULING.yaml
 ```
 
+### 8. Debug Issues Systematically
+```bash
+kubectl apply -f troubleshooting/SIMPLE-DEBUG.yaml
+```
+
 ## The Pattern: Build Up Gradually
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
-**Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling
+**Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling  
+**Level 4**: Master Troubleshooting (essential for production)
 
 Each level solves a specific problem. Don't skip ahead.
 
@@ -178,6 +189,13 @@ kubectl get pods -o wide
 kubectl describe pod <pod-name> | grep -A 10 "Node-Selectors"
 ```
 
+### Debug application issues:
+```bash
+kubectl get events --sort-by='.lastTimestamp'
+kubectl describe pod <pod-name>
+kubectl logs <pod-name> --previous
+```
+
 ## Clean Up
 
 Remove all resources:
@@ -189,6 +207,7 @@ kubectl delete -f daemonsets/
 kubectl delete -f pdbs/
 kubectl delete -f rbac/
 kubectl delete -f scheduling/
+kubectl delete -f troubleshooting/
 ```
 
 ## Notes

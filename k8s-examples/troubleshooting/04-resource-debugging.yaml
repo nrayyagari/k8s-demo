@@ -1,0 +1,412 @@
+# Resource and Performance Debugging
+# WHY: Resource issues cause cascading failures and performance problems
+# PATTERN: Create resource pressure scenarios → Monitor and debug systematically
+
+---
+# Namespace for resource testing
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: resource-debug
+  labels:
+    purpose: resource-testing
+
+---
+# Scenario 1: Memory-hungry application (OOMKilled)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-hog
+  namespace: resource-debug
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: memory-hog
+  template:
+    metadata:
+      labels:
+        app: memory-hog
+    spec:
+      containers:
+      - name: memory-consumer
+        image: busybox:1.35
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Starting memory allocation..."
+          # Allocate memory gradually until OOM
+          while true; do
+            # Allocate 50MB chunks
+            dd if=/dev/zero of=/tmp/memory.$RANDOM bs=1M count=50 2>/dev/null
+            echo "Allocated 50MB, total: $(ls -la /tmp/memory.* | wc -l) chunks"
+            sleep 2
+          done
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"  # Will be OOMKilled when exceeded
+            cpu: "200m"
+
+---
+# Scenario 2: CPU-intensive application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-hog
+  namespace: resource-debug
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpu-hog
+  template:
+    metadata:
+      labels:
+        app: cpu-hog
+    spec:
+      containers:
+      - name: cpu-burner
+        image: busybox:1.35
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Starting CPU intensive workload..."
+          # Create multiple CPU-burning processes
+          for i in $(seq 1 4); do
+            (while true; do echo "CPU burner $i" > /dev/null; done) &
+          done
+          wait
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"  # Will be throttled
+
+---
+# Scenario 3: Resource requests without limits (bad practice)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unlimited-resources
+  namespace: resource-debug
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: unlimited
+  template:
+    metadata:
+      labels:
+        app: unlimited
+    spec:
+      containers:
+      - name: unlimited-app
+        image: nginx:1.21
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          # ❌ No limits set - can consume unlimited resources
+
+---
+# Scenario 4: Resource starvation (no requests set)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: no-requests
+  namespace: resource-debug
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: no-requests
+  template:
+    metadata:
+      labels:
+        app: no-requests
+    spec:
+      containers:
+      - name: starved-app
+        image: nginx:1.21
+        # ❌ No resource requests/limits - can be starved
+
+---
+# Scenario 5: Storage pressure
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: disk-filler
+  namespace: resource-debug
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: disk-filler
+  template:
+    metadata:
+      labels:
+        app: disk-filler
+    spec:
+      containers:
+      - name: disk-consumer
+        image: busybox:1.35
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Starting disk space consumption..."
+          mkdir -p /data
+          # Fill up available disk space
+          i=0
+          while [ $i -lt 100 ]; do
+            dd if=/dev/zero of=/data/bigfile$i bs=10M count=10 2>/dev/null || break
+            echo "Created file $i ($(df -h /data | tail -1))"
+            i=$((i+1))
+            sleep 1
+          done
+          echo "Disk filling completed or failed"
+          sleep 3600
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+      volumes:
+      - name: data-volume
+        emptyDir:
+          sizeLimit: 1Gi  # Limited ephemeral storage
+
+---
+# HPA for testing autoscaling with resource pressure
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cpu-hog-hpa
+  namespace: resource-debug
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cpu-hog
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50  # Will trigger scaling due to CPU load
+
+---
+# ResourceQuota to limit namespace resources
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: resource-debug-quota
+  namespace: resource-debug
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    pods: "10"
+
+---
+# LimitRange to set default resource constraints
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: resource-debug-limits
+  namespace: resource-debug
+spec:
+  limits:
+  - default:
+      memory: "256Mi"
+      cpu: "200m"
+    defaultRequest:
+      memory: "128Mi"
+      cpu: "100m"
+    type: Container
+  - max:
+      memory: "1Gi"
+      cpu: "1"
+    min:
+      memory: "64Mi"
+      cpu: "50m"
+    type: Container
+
+---
+# PodDisruptionBudget for testing disruption scenarios
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: memory-hog-pdb
+  namespace: resource-debug
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: memory-hog
+
+---
+# Monitoring and debugging pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-monitor
+  namespace: resource-debug
+spec:
+  containers:
+  - name: monitor
+    image: nicolaka/netshoot:latest
+    command: ["sleep", "3600"]
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+    securityContext:
+      capabilities:
+        add: ["SYS_PTRACE", "SYS_ADMIN"]
+
+---
+# Well-configured application for comparison
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: well-configured
+  namespace: resource-debug
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: well-configured
+  template:
+    metadata:
+      labels:
+        app: well-configured
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+# Comprehensive resource debugging workflow:
+#
+# 1. Apply all resources:
+#    kubectl apply -f 04-resource-debugging.yaml
+#
+# 2. Check overall resource status:
+#    kubectl get all -n resource-debug
+#    kubectl top nodes
+#    kubectl top pods -n resource-debug
+#
+# 3. Monitor resource quota and limits:
+#    kubectl describe resourcequota resource-debug-quota -n resource-debug
+#    kubectl describe limitrange resource-debug-limits -n resource-debug
+#
+# 4. Debug OOMKilled pods:
+#    kubectl get pods -n resource-debug | grep memory-hog
+#    kubectl describe pod <memory-hog-pod> -n resource-debug | grep -A 10 "Last State"
+#    kubectl describe pod <memory-hog-pod> -n resource-debug | grep -A 5 "OOMKilled"
+#    kubectl logs <memory-hog-pod> -n resource-debug --previous
+#
+# 5. Debug CPU throttling:
+#    kubectl top pods -n resource-debug | grep cpu-hog
+#    kubectl describe pod <cpu-hog-pod> -n resource-debug | grep -A 10 "Limits"
+#    # Check if CPU usage hits limits and gets throttled
+#
+# 6. Check HPA behavior under load:
+#    kubectl get hpa -n resource-debug
+#    kubectl describe hpa cpu-hog-hpa -n resource-debug
+#    kubectl get pods -n resource-debug -l app=cpu-hog --watch
+#
+# 7. Investigate resource starvation:
+#    kubectl describe pod <no-requests-pod> -n resource-debug
+#    kubectl top pod <no-requests-pod> -n resource-debug
+#    # Compare with well-configured pods
+#
+# 8. Monitor disk usage:
+#    kubectl exec -n resource-debug <disk-filler-pod> -- df -h
+#    kubectl describe pod <disk-filler-pod> -n resource-debug | grep -A 5 Events
+#
+# 9. Deep dive resource analysis:
+#    kubectl exec -n resource-debug resource-monitor -- top
+#    kubectl exec -n resource-debug resource-monitor -- ps aux --sort=-%mem | head -10
+#    kubectl exec -n resource-debug resource-monitor -- ps aux --sort=-%cpu | head -10
+#
+# 10. Node-level resource debugging:
+#     kubectl describe nodes | grep -A 10 "Allocated resources"
+#     kubectl describe nodes | grep -A 10 "Non-terminated Pods"
+#     kubectl get events --all-namespaces | grep -i "insufficient\|oomkilled\|evicted"
+#
+# 11. Check for resource pressure:
+#     kubectl describe nodes | grep -A 5 "Conditions"
+#     # Look for MemoryPressure, DiskPressure, PIDPressure
+#
+# 12. Advanced resource monitoring:
+#     # If metrics server is installed:
+#     kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes | jq .
+#     kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/resource-debug/pods | jq .
+#
+# 13. Troubleshoot evicted pods:
+#     kubectl get pods -n resource-debug | grep Evicted
+#     kubectl describe pod <evicted-pod> -n resource-debug
+#
+# 14. Check resource allocation vs usage:
+#     kubectl top pods -n resource-debug --sort-by memory
+#     kubectl top pods -n resource-debug --sort-by cpu
+#     # Compare with resource requests/limits
+#
+# 15. Test pod disruption budgets:
+#     kubectl get pdb -n resource-debug
+#     kubectl describe pdb memory-hog-pdb -n resource-debug
+#
+# Expected behaviors and debugging points:
+# 
+# - memory-hog pods will be OOMKilled when exceeding memory limits
+# - cpu-hog pods will have CPU usage capped at limits (throttling)
+# - unlimited-resources pods can consume unbounded resources (dangerous)
+# - no-requests pods may be scheduled on overcommitted nodes
+# - disk-filler will eventually fail when hitting storage limits
+# - HPA will scale cpu-hog deployment when CPU utilization exceeds 50%
+# - ResourceQuota will prevent pod creation when limits are exceeded
+# - Well-configured deployment shows best practices
+#
+# Key debugging commands summary:
+# kubectl top nodes/pods              - Current resource usage
+# kubectl describe node <name>        - Node capacity and allocation
+# kubectl describe pod <name>         - Pod resource config and status  
+# kubectl get events                  - Resource-related events
+# kubectl describe resourcequota      - Quota usage and limits
+# kubectl logs <pod> --previous       - Logs from crashed containers

@@ -1,0 +1,365 @@
+# Networking and DNS Troubleshooting
+# WHY: Network issues are subtle and hard to debug
+# PATTERN: Layer by layer network testing from pod → service → ingress
+
+---
+# Create namespace for networking tests
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: network-debug
+  labels:
+    purpose: debugging
+
+---
+# DNS test tools pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dnsutils
+  namespace: network-debug
+spec:
+  containers:
+  - name: dnsutils
+    image: tutum/dnsutils:latest
+    command: ["sleep", "3600"]
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# Network testing tools pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netshoot
+  namespace: network-debug
+spec:
+  containers:
+  - name: netshoot
+    image: nicolaka/netshoot:latest
+    command: ["sleep", "3600"]
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "50m"
+    securityContext:
+      capabilities:
+        add: ["NET_ADMIN", "NET_RAW"]
+
+---
+# Simple web server for testing
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-web-server
+  namespace: network-debug
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-web
+  template:
+    metadata:
+      labels:
+        app: test-web
+    spec:
+      containers:
+      - name: web
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        volumeMounts:
+        - name: config
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+      volumes:
+      - name: config
+        configMap:
+          name: test-web-config
+
+---
+# ConfigMap with pod info
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-web-config
+  namespace: network-debug
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head><title>Network Test Server</title></head>
+    <body>
+      <h1>Network Test Server</h1>
+      <p>Pod Name: ${POD_NAME}</p>
+      <p>Pod IP: ${POD_IP}</p>
+      <p>Timestamp: $(date)</p>
+    </body>
+    </html>
+
+---
+# Service for the web server
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-web-service
+  namespace: network-debug
+spec:
+  selector:
+    app: test-web
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Cross-namespace service for testing
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-dns-service
+  namespace: default  # Different namespace
+spec:
+  type: ExternalName
+  externalName: google.com
+
+---
+# Scenario 1: Network Policy blocking traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: network-debug
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  # No ingress rules = deny all ingress traffic
+
+---
+# Allowed pod for network policy testing
+apiVersion: v1
+kind: Pod
+metadata:
+  name: allowed-client
+  namespace: network-debug
+  labels:
+    role: allowed-client
+spec:
+  containers:
+  - name: client
+    image: busybox:1.35
+    command: ["sleep", "3600"]
+
+---
+# Network policy to allow specific traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-allowed-client
+  namespace: network-debug
+spec:
+  podSelector:
+    matchLabels:
+      app: test-web
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: allowed-client
+    ports:
+    - protocol: TCP
+      port: 80
+
+---
+# Database deployment for inter-service communication testing
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-database
+  namespace: network-debug
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-db
+  template:
+    metadata:
+      labels:
+        app: test-db
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "testpass123"
+        - name: POSTGRES_DB
+          value: "testdb"
+        ports:
+        - containerPort: 5432
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+
+---
+# Database service
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-database-service
+  namespace: network-debug
+spec:
+  selector:
+    app: test-db
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+
+---
+# Application that connects to database
+apiVersion: v1
+kind: Pod
+metadata:
+  name: db-client
+  namespace: network-debug
+spec:
+  containers:
+  - name: client
+    image: postgres:13
+    command: ["sleep", "3600"]
+    env:
+    - name: PGHOST
+      value: "test-database-service"
+    - name: PGPORT
+      value: "5432"
+    - name: PGUSER
+      value: "postgres"
+    - name: PGPASSWORD
+      value: "testpass123"
+    - name: PGDATABASE
+      value: "testdb"
+
+---
+# Ingress for external access testing
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-web-ingress
+  namespace: network-debug
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: test.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: test-web-service
+            port:
+              number: 80
+
+# Comprehensive networking debug commands:
+#
+# 1. Apply all resources:
+#    kubectl apply -f 03-networking-dns.yaml
+#
+# 2. Basic connectivity tests:
+#    kubectl get all -n network-debug
+#    kubectl get pods -n network-debug -o wide
+#
+# 3. DNS Testing:
+#    kubectl exec -n network-debug dnsutils -- nslookup kubernetes.default
+#    kubectl exec -n network-debug dnsutils -- nslookup test-web-service
+#    kubectl exec -n network-debug dnsutils -- nslookup test-web-service.network-debug.svc.cluster.local
+#    kubectl exec -n network-debug dnsutils -- nslookup google.com
+#
+# 4. Service Discovery Testing:
+#    kubectl exec -n network-debug dnsutils -- nslookup test-web-service
+#    kubectl exec -n network-debug dnsutils -- dig test-web-service.network-debug.svc.cluster.local
+#    kubectl get endpoints -n network-debug
+#
+# 5. Pod-to-Pod Communication:
+#    POD1=$(kubectl get pods -n network-debug -l app=test-web -o jsonpath='{.items[0].metadata.name}')
+#    POD2=$(kubectl get pods -n network-debug -l app=test-web -o jsonpath='{.items[1].metadata.name}')
+#    POD1_IP=$(kubectl get pod -n network-debug $POD1 -o jsonpath='{.status.podIP}')
+#    kubectl exec -n network-debug $POD2 -- ping -c 3 $POD1_IP
+#    kubectl exec -n network-debug $POD2 -- wget -qO- http://$POD1_IP
+#
+# 6. Service Communication:
+#    kubectl exec -n network-debug netshoot -- curl -m 5 test-web-service
+#    kubectl exec -n network-debug netshoot -- curl -m 5 test-web-service.network-debug.svc.cluster.local
+#
+# 7. Cross-Namespace Communication:
+#    kubectl exec -n network-debug netshoot -- curl -m 5 external-dns-service.default.svc.cluster.local
+#
+# 8. Network Policy Testing:
+#    # This should fail due to deny-all policy:
+#    kubectl exec -n network-debug netshoot -- curl -m 5 test-web-service
+#    
+#    # This should work (allowed client):
+#    kubectl exec -n network-debug allowed-client -- wget -qO- http://test-web-service
+#
+# 9. Database Connectivity:
+#    kubectl exec -n network-debug db-client -- pg_isready
+#    kubectl exec -n network-debug db-client -- psql -h test-database-service -U postgres -d testdb -c "SELECT version();"
+#
+# 10. Advanced Network Debugging:
+#     kubectl exec -n network-debug netshoot -- ss -tuln
+#     kubectl exec -n network-debug netshoot -- netstat -rn
+#     kubectl exec -n network-debug netshoot -- iptables -L
+#     kubectl exec -n network-debug netshoot -- tcpdump -i eth0 -n
+#
+# 11. DNS Configuration Check:
+#     kubectl exec -n network-debug dnsutils -- cat /etc/resolv.conf
+#     kubectl get configmap coredns -n kube-system -o yaml
+#     kubectl logs -n kube-system -l k8s-app=kube-dns
+#
+# 12. Ingress Testing (if ingress controller installed):
+#     # Add to /etc/hosts: <ingress-ip> test.local
+#     curl -H "Host: test.local" http://<ingress-ip>/
+#     kubectl describe ingress test-web-ingress -n network-debug
+#
+# 13. Network Policy Debugging:
+#     kubectl get networkpolicies -n network-debug
+#     kubectl describe networkpolicy deny-all-ingress -n network-debug
+#     kubectl describe networkpolicy allow-from-allowed-client -n network-debug
+#
+# 14. Troubleshooting Network Issues:
+#     # Check CNI plugin logs
+#     kubectl logs -n kube-system -l k8s-app=cilium  # If using Cilium
+#     kubectl logs -n kube-system -l k8s-app=calico-node  # If using Calico
+#     
+#     # Check kube-proxy
+#     kubectl get pods -n kube-system | grep kube-proxy
+#     kubectl logs -n kube-system <kube-proxy-pod>
+#
+# 15. Port Forward Testing:
+#     kubectl port-forward -n network-debug svc/test-web-service 8080:80
+#     # Then curl localhost:8080
+#
+# Expected behaviors:
+# - DNS resolution should work for services and external names
+# - Pod-to-pod communication should work within namespace
+# - Services should load-balance between pod replicas
+# - Network policies should block unauthorized traffic
+# - Cross-namespace communication should work (unless blocked by policies)
+# - Database connections should work through service DNS names

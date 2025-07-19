@@ -1,0 +1,114 @@
+# SIMPLE DEBUG: Start Here
+# Basic troubleshooting examples for beginners
+
+---
+# Broken web application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: broken-web
+  template:
+    metadata:
+      labels:
+        app: broken-web
+    spec:
+      containers:
+      - name: web
+        image: nginx:wrong-tag  # ❌ This tag doesn't exist
+        ports:
+        - containerPort: 80
+
+---
+# Service that can't find pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: broken-service
+spec:
+  selector:
+    app: wrong-label  # ❌ Doesn't match pod labels
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# Working application for comparison
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: working-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: working-web
+  template:
+    metadata:
+      labels:
+        app: working-web
+    spec:
+      containers:
+      - name: web
+        image: nginx:1.21  # ✅ Correct tag
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Working service
+apiVersion: v1
+kind: Service
+metadata:
+  name: working-service
+spec:
+  selector:
+    app: working-web  # ✅ Matches pod labels
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# Debug tools pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-pod
+spec:
+  containers:
+  - name: tools
+    image: busybox:1.35
+    command: ["sleep", "3600"]
+
+# Basic debugging workflow:
+#
+# 1. Apply this file:
+#    kubectl apply -f SIMPLE-DEBUG.yaml
+#
+# 2. Check what's broken:
+#    kubectl get pods
+#    kubectl get services
+#
+# 3. Debug broken pod:
+#    kubectl describe pod <broken-pod-name>
+#    kubectl logs <broken-pod-name>
+#
+# 4. Debug broken service:
+#    kubectl describe service broken-service
+#    kubectl get endpoints broken-service
+#
+# 5. Test working service:
+#    kubectl exec -it debug-pod -- wget -qO- http://working-service
+#
+# 6. Fix broken service:
+#    kubectl patch service broken-service -p '{"spec":{"selector":{"app":"broken-web"}}}'
+#
+# 7. Fix broken deployment:
+#    kubectl patch deployment broken-app -p '{"spec":{"template":{"spec":{"containers":[{"name":"web","image":"nginx:1.21"}]}}}}'
