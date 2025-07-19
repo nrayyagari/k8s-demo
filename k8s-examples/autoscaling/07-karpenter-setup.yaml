@@ -1,0 +1,354 @@
+# Karpenter: Modern Node Provisioning
+# WHY: Optimal node provisioning based on exact pod requirements
+# PATTERN: Analyze pending pods → Provision perfect-fit nodes → Fast scheduling
+
+---
+# Karpenter NodePool: Defines how nodes should be provisioned
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: general-purpose
+spec:
+  # Template for all nodes created by this NodePool
+  template:
+    metadata:
+      labels:
+        intent: general-purpose
+        managed-by: karpenter
+    spec:
+      # Requirements that constrain node provisioning
+      requirements:
+      # Architecture
+      - key: kubernetes.io/arch
+        operator: In
+        values: ["amd64"]
+      # Operating System
+      - key: kubernetes.io/os
+        operator: In
+        values: ["linux"]
+      # Instance types - wide variety for cost optimization
+      - key: node.kubernetes.io/instance-type
+        operator: In
+        values:
+        # Compute optimized
+        - c5.large
+        - c5.xlarge
+        - c5.2xlarge
+        - c5.4xlarge
+        # General purpose
+        - m5.large
+        - m5.xlarge
+        - m5.2xlarge
+        - m5.4xlarge
+        # Memory optimized
+        - r5.large
+        - r5.xlarge
+        - r5.2xlarge
+      # Capacity type - mix of spot and on-demand for cost savings
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values: ["spot", "on-demand"]
+      
+      # Reference to node configuration
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: general-purpose
+      
+      # Kubelet configuration
+      kubelet:
+        clusterDNS: ["10.100.0.10"]
+        maxPods: 110
+        
+      # Startup and shutdown behavior
+      startupTaints:
+      - key: karpenter.sh/unschedulable
+        value: "true"
+        effect: NoSchedule
+        
+  # Resource limits for this NodePool
+  limits:
+    cpu: 1000       # Max 1000 CPU cores across all nodes
+    memory: 1000Gi  # Max 1TB memory across all nodes
+  
+  # Disruption settings - how Karpenter manages node lifecycle
+  disruption:
+    # Consolidate underutilized nodes
+    consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 30s
+    
+    # Automatically expire idle nodes
+    expireAfter: 30m
+
+---
+# EC2NodeClass: AWS-specific node configuration
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: general-purpose
+spec:
+  # AMI configuration
+  amiFamily: AL2  # Amazon Linux 2
+  
+  # Networking - auto-discover subnets and security groups
+  subnetSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: "my-cluster"
+      Type: "Private"  # Use private subnets
+  
+  securityGroupSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: "my-cluster"
+  
+  # IAM role for nodes
+  role: "KarpenterNodeInstanceProfile"
+  
+  # Instance metadata service configuration
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+  
+  # User data for node initialization
+  userData: |
+    #!/bin/bash
+    /etc/eks/bootstrap.sh my-cluster
+    echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+    sysctl -p
+  
+  # Storage configuration
+  blockDeviceMappings:
+  - deviceName: /dev/xvda
+    ebs:
+      volumeSize: 100Gi
+      volumeType: gp3
+      encrypted: true
+      deleteOnTermination: true
+  
+  # Instance tags
+  tags:
+    Name: "karpenter-node"
+    Environment: "production"
+    ManagedBy: "karpenter"
+
+---
+# High-Memory NodePool: For memory-intensive workloads
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: high-memory
+spec:
+  template:
+    metadata:
+      labels:
+        intent: high-memory
+        managed-by: karpenter
+    spec:
+      requirements:
+      - key: kubernetes.io/arch
+        operator: In
+        values: ["amd64"]
+      - key: kubernetes.io/os
+        operator: In
+        values: ["linux"]
+      # Memory-optimized instances only
+      - key: node.kubernetes.io/instance-type
+        operator: In
+        values:
+        - r5.xlarge
+        - r5.2xlarge
+        - r5.4xlarge
+        - r5.8xlarge
+        - r5.12xlarge
+        - r6i.xlarge
+        - r6i.2xlarge
+        - r6i.4xlarge
+      # On-demand only for stable memory workloads
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values: ["on-demand"]
+      
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: high-memory
+      
+      # Higher resource limits for memory workloads
+      kubelet:
+        maxPods: 110
+        
+      # Taint to ensure only memory-intensive pods schedule here
+      taints:
+      - key: workload-type
+        value: memory-intensive
+        effect: NoSchedule
+        
+  limits:
+    cpu: 500
+    memory: 2000Gi  # Higher memory limit
+  
+  disruption:
+    consolidationPolicy: WhenEmpty  # More conservative for memory workloads
+    expireAfter: 60m
+
+---
+# EC2NodeClass for high-memory nodes
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: high-memory
+spec:
+  amiFamily: AL2
+  
+  subnetSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: "my-cluster"
+      Type: "Private"
+  
+  securityGroupSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: "my-cluster"
+  
+  role: "KarpenterNodeInstanceProfile"
+  
+  userData: |
+    #!/bin/bash
+    /etc/eks/bootstrap.sh my-cluster
+    # Optimize for memory workloads
+    echo "vm.swappiness = 1" >> /etc/sysctl.conf
+    sysctl -p
+  
+  blockDeviceMappings:
+  - deviceName: /dev/xvda
+    ebs:
+      volumeSize: 200Gi  # Larger storage for memory workloads
+      volumeType: gp3
+      encrypted: true
+  
+  tags:
+    Name: "karpenter-memory-node"
+    WorkloadType: "memory-intensive"
+
+---
+# Example workload that triggers general-purpose node provisioning
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app-karpenter
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: web-app-karpenter
+  template:
+    metadata:
+      labels:
+        app: web-app-karpenter
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# HPA for the web app
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-app-karpenter-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-app-karpenter
+  minReplicas: 5
+  maxReplicas: 50  # Will trigger node provisioning
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+# Example memory-intensive workload
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-intensive-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: memory-intensive
+  template:
+    metadata:
+      labels:
+        app: memory-intensive
+    spec:
+      # Tolerate the memory-intensive taint
+      tolerations:
+      - key: workload-type
+        value: memory-intensive
+        operator: Equal
+        effect: NoSchedule
+      
+      # Prefer high-memory nodes
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: intent
+                operator: In
+                values: ["high-memory"]
+      
+      containers:
+      - name: bigdata
+        image: openjdk:11-jdk
+        command: ["java", "-Xmx4g", "-jar", "/app/memory-app.jar"]
+        resources:
+          requests:
+            memory: 4Gi    # High memory request triggers r5.xlarge+ nodes
+            cpu: 500m
+          limits:
+            memory: 6Gi
+            cpu: 1000m
+
+# To deploy Karpenter:
+#
+# 1. Install Karpenter in your cluster:
+#    helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter --version v0.31.0 \
+#      --namespace karpenter --create-namespace \
+#      --set settings.aws.clusterName=my-cluster \
+#      --set settings.aws.defaultInstanceProfile=KarpenterNodeInstanceProfile \
+#      --set settings.aws.interruptionQueueName=my-cluster
+#
+# 2. Apply this configuration:
+#    kubectl apply -f 07-karpenter-setup.yaml
+#
+# 3. Watch Karpenter provision nodes:
+#    kubectl logs -f -n karpenter -l app.kubernetes.io/name=karpenter
+#
+# 4. Scale up the workload to trigger provisioning:
+#    kubectl scale deployment web-app-karpenter --replicas=20
+#
+# 5. Watch nodes being created:
+#    kubectl get nodes --watch
+#
+# 6. Check NodePool status:
+#    kubectl describe nodepool general-purpose
+#
+# 7. View node utilization:
+#    kubectl top nodes

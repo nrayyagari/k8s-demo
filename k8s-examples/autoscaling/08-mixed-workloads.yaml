@@ -1,0 +1,454 @@
+# Mixed Workloads: Different Apps, Optimal Node Provisioning
+# WHY: Real clusters have diverse workloads with different resource needs
+# PATTERN: Workload-specific requirements → Karpenter provisions optimal nodes
+
+---
+# Namespace for mixed workload demo
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mixed-workloads
+  labels:
+    purpose: autoscaling-demo
+
+---
+# CPU-Intensive Workload (Compute-optimized nodes)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-intensive
+  namespace: mixed-workloads
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cpu-intensive
+      workload-type: compute
+  template:
+    metadata:
+      labels:
+        app: cpu-intensive
+        workload-type: compute
+    spec:
+      # Node selection preferences
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values: ["c5.large", "c5.xlarge", "c5.2xlarge", "c5.4xlarge"]
+      
+      containers:
+      - name: cpu-worker
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting CPU-intensive workload..."
+          while true; do
+            # Simulate CPU-intensive work
+            for i in $(seq 1 1000000); do
+              echo $((i * i)) > /dev/null
+            done
+            sleep 1
+          done
+        resources:
+          requests:
+            cpu: 900m      # High CPU, low memory → triggers c5.large
+            memory: 256Mi
+          limits:
+            cpu: 1800m
+            memory: 512Mi
+
+---
+# Memory-Intensive Workload (Memory-optimized nodes)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-intensive
+  namespace: mixed-workloads
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: memory-intensive
+      workload-type: memory
+  template:
+    metadata:
+      labels:
+        app: memory-intensive
+        workload-type: memory
+    spec:
+      # Node selection preferences
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values: ["r5.large", "r5.xlarge", "r5.2xlarge", "r5.4xlarge"]
+      
+      containers:
+      - name: memory-worker
+        image: openjdk:11-jdk
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting memory-intensive workload..."
+          java -Xms2g -Xmx3g -XX:+UseG1GC \
+            -cp /usr/lib/jvm/java-11-openjdk/lib/tools.jar \
+            -jar /dev/null || sleep infinity
+        resources:
+          requests:
+            cpu: 200m      # Low CPU, high memory → triggers r5.xlarge
+            memory: 3Gi
+          limits:
+            cpu: 500m
+            memory: 4Gi
+
+---
+# Balanced Workload (General-purpose nodes)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: balanced-workload
+  namespace: mixed-workloads
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: balanced-workload
+      workload-type: general
+  template:
+    metadata:
+      labels:
+        app: balanced-workload
+        workload-type: general
+    spec:
+      # No specific node preferences - let Karpenter choose optimal
+      containers:
+      - name: web-server
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 200m      # Balanced CPU/memory → triggers m5.large
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+
+---
+# GPU Workload (GPU-enabled nodes)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-workload
+  namespace: mixed-workloads
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-workload
+      workload-type: gpu
+  template:
+    metadata:
+      labels:
+        app: gpu-workload
+        workload-type: gpu
+    spec:
+      # GPU node requirements
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values: ["p3.2xlarge", "p3.8xlarge", "g4dn.xlarge", "g4dn.2xlarge"]
+      
+      # Tolerate GPU taints if any
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      
+      containers:
+      - name: gpu-trainer
+        image: tensorflow/tensorflow:latest-gpu
+        command: ["python3", "-c"]
+        args:
+        - |
+          import tensorflow as tf
+          print("GPU Available:", tf.config.list_physical_devices('GPU'))
+          # Simulate GPU workload
+          import time
+          while True:
+            print("Running GPU computation...")
+            time.sleep(30)
+        resources:
+          requests:
+            nvidia.com/gpu: 1  # GPU request → triggers p3/g4dn instance
+            cpu: 2
+            memory: 8Gi
+          limits:
+            nvidia.com/gpu: 1
+            cpu: 4
+            memory: 16Gi
+
+---
+# Spot-only Workload (Cost-optimized)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch-jobs
+  namespace: mixed-workloads
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: batch-jobs
+      workload-type: batch
+  template:
+    metadata:
+      labels:
+        app: batch-jobs
+        workload-type: batch
+    spec:
+      # Prefer spot instances for cost savings
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: karpenter.sh/capacity-type
+                operator: In
+                values: ["spot"]
+      
+      # Tolerate spot interruptions
+      tolerations:
+      - key: karpenter.sh/capacity-type
+        value: spot
+        operator: Equal
+        effect: NoSchedule
+      
+      containers:
+      - name: batch-processor
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Starting batch job (spot instance)..."
+          # Simulate batch processing
+          for i in $(seq 1 3600); do
+            echo "Processing batch item $i"
+            sleep 1
+          done
+          echo "Batch job completed"
+        resources:
+          requests:
+            cpu: 500m      # Moderate resources for cost-effective spot instances
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+
+---
+# HPA for scaling workloads
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cpu-intensive-hpa
+  namespace: mixed-workloads
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cpu-intensive
+  minReplicas: 3
+  maxReplicas: 15
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: balanced-workload-hpa
+  namespace: mixed-workloads
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: balanced-workload
+  minReplicas: 5
+  maxReplicas: 25
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# Service for balanced workload
+apiVersion: v1
+kind: Service
+metadata:
+  name: balanced-workload-service
+  namespace: mixed-workloads
+spec:
+  selector:
+    app: balanced-workload
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Karpenter NodePool optimized for mixed workloads
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: mixed-workloads
+spec:
+  template:
+    metadata:
+      labels:
+        intent: mixed-workloads
+    spec:
+      requirements:
+      - key: kubernetes.io/arch
+        operator: In
+        values: ["amd64"]
+      - key: kubernetes.io/os
+        operator: In
+        values: ["linux"]
+      # Wide variety of instance types for optimal selection
+      - key: node.kubernetes.io/instance-type
+        operator: In
+        values:
+        # Compute optimized
+        - c5.large
+        - c5.xlarge
+        - c5.2xlarge
+        - c5.4xlarge
+        # General purpose
+        - m5.large
+        - m5.xlarge
+        - m5.2xlarge
+        - m5.4xlarge
+        # Memory optimized
+        - r5.large
+        - r5.xlarge
+        - r5.2xlarge
+        - r5.4xlarge
+        # GPU instances
+        - g4dn.xlarge
+        - g4dn.2xlarge
+        - p3.2xlarge
+      # Mix of spot and on-demand
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values: ["spot", "on-demand"]
+      
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: mixed-workloads
+      
+      kubelet:
+        maxPods: 110
+  
+  limits:
+    cpu: 2000       # High limits for diverse workloads
+    memory: 2000Gi
+  
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 60s  # Slightly longer for mixed workloads
+
+---
+# EC2NodeClass for mixed workloads
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: mixed-workloads
+spec:
+  amiFamily: AL2
+  
+  subnetSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: "my-cluster"
+  
+  securityGroupSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: "my-cluster"
+  
+  role: "KarpenterNodeInstanceProfile"
+  
+  userData: |
+    #!/bin/bash
+    /etc/eks/bootstrap.sh my-cluster
+    # Install GPU drivers if needed
+    if lspci | grep -i nvidia; then
+      /opt/aws/bin/cfn-signal --exit-code 0 --region ${AWS::Region} --stack ${AWS::StackName} --resource NodeGroup
+    fi
+  
+  blockDeviceMappings:
+  - deviceName: /dev/xvda
+    ebs:
+      volumeSize: 100Gi
+      volumeType: gp3
+      encrypted: true
+
+# Testing the mixed workloads:
+#
+# 1. Apply the configuration:
+#    kubectl apply -f 08-mixed-workloads.yaml
+#
+# 2. Watch different instance types being provisioned:
+#    kubectl get nodes -o custom-columns=NAME:.metadata.name,INSTANCE:.metadata.labels.node\.kubernetes\.io/instance-type,CAPACITY:.metadata.labels.karpenter\.sh/capacity-type
+#
+# 3. Scale up workloads to see optimal provisioning:
+#    kubectl scale deployment cpu-intensive --replicas=10 -n mixed-workloads
+#    kubectl scale deployment memory-intensive --replicas=5 -n mixed-workloads
+#
+# 4. Generate load to trigger HPA:
+#    kubectl run load-generator --image=busybox -n mixed-workloads --restart=Never -- /bin/sh -c "while true; do wget -q -O- http://balanced-workload-service; done"
+#
+# 5. Monitor Karpenter decisions:
+#    kubectl logs -f -n karpenter -l app.kubernetes.io/name=karpenter | grep -E "(created|terminated|instance-type)"
+#
+# 6. Check resource utilization:
+#    kubectl top nodes
+#    kubectl top pods -n mixed-workloads
+#
+# Expected outcomes:
+# - CPU-intensive pods → c5.* instances
+# - Memory-intensive pods → r5.* instances  
+# - GPU workload → p3.* or g4dn.* instances
+# - Balanced workload → m5.* instances
+# - Batch jobs → spot instances when possible
