@@ -1,0 +1,84 @@
+# SIMPLE RBAC: Start Here
+# Basic RBAC setup to understand the concepts
+
+---
+# 1. Create namespace for our example
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rbac-demo
+  labels:
+    purpose: learning-rbac
+
+---
+# 2. Role: Define what can be done (namespace-scoped)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: rbac-demo
+  name: pod-manager
+rules:
+- apiGroups: [""]  # Core API group
+  resources: ["pods"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+
+---
+# 3. ServiceAccount: Identity for applications
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-sa
+  namespace: rbac-demo
+
+---
+# 4. RoleBinding: Connect WHO to WHAT (namespace-scoped)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-manager-binding
+  namespace: rbac-demo
+subjects:
+- kind: ServiceAccount
+  name: demo-sa
+  namespace: rbac-demo
+roleRef:
+  kind: Role
+  name: pod-manager
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 5. Test pod using the ServiceAccount
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rbac-test-pod
+  namespace: rbac-demo
+spec:
+  serviceAccountName: demo-sa
+  containers:
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command: ["sleep", "3600"]
+
+---
+# 6. Target pod to test permissions on
+apiVersion: v1
+kind: Pod
+metadata:
+  name: target-pod
+  namespace: rbac-demo
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    ports:
+    - containerPort: 80
+
+# Test the permissions:
+# kubectl exec -it rbac-test-pod -n rbac-demo -- kubectl auth can-i create pods
+# kubectl exec -it rbac-test-pod -n rbac-demo -- kubectl auth can-i create services
+# kubectl exec -it rbac-test-pod -n rbac-demo -- kubectl get pods
+# kubectl exec -it rbac-test-pod -n rbac-demo -- kubectl get pods -n default

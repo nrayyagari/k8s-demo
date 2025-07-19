@@ -1,0 +1,92 @@
+# Basic Team Role: Namespace-scoped permissions
+# WHY: Development teams need isolated access to their own namespace
+# WHEN: Each team works in separate namespace (team-alpha, team-beta, etc.)
+
+---
+# Create namespace for team
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-alpha
+  labels:
+    team: alpha
+    environment: development
+
+---
+# Role: Define permissions within team-alpha namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: team-alpha
+  name: developer
+rules:
+# Application resources - full access
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Core resources - full access  
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Pod logs and exec - for debugging
+- apiGroups: [""]
+  resources: ["pods/log", "pods/exec"]
+  verbs: ["get", "create"]
+
+# Networking - limited access
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+---
+# ServiceAccount for team applications
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: team-alpha-sa
+  namespace: team-alpha
+
+---
+# RoleBinding: Connect developer role to users/serviceaccounts
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: developers-binding
+  namespace: team-alpha
+subjects:
+# Real users (from identity provider)
+- kind: User
+  name: alice@company.com
+  apiGroup: rbac.authorization.k8s.io
+- kind: User  
+  name: bob@company.com
+  apiGroup: rbac.authorization.k8s.io
+# ServiceAccount for CI/CD
+- kind: ServiceAccount
+  name: team-alpha-sa
+  namespace: team-alpha
+roleRef:
+  kind: Role
+  name: developer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Test pod to verify permissions
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-permissions
+  namespace: team-alpha
+spec:
+  serviceAccountName: team-alpha-sa
+  containers:
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command: ["sleep", "3600"]
+    # Test commands:
+    # kubectl auth can-i create pods
+    # kubectl auth can-i list nodes (should fail)
+    # kubectl get pods -n team-alpha (should work)
+    # kubectl get pods -n default (should fail)

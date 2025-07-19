@@ -1,0 +1,163 @@
+# Monitoring Reader: Cluster-wide read-only access
+# WHY: Prometheus/Grafana need to read metrics from all namespaces
+# PATTERN: ClusterRole + ClusterRoleBinding = Read-only across cluster
+
+---
+# ClusterRole: Read-only monitoring permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring-reader
+rules:
+# Core resources - read-only
+- apiGroups: [""]
+  resources: ["nodes", "pods", "services", "endpoints", "configmaps"]
+  verbs: ["get", "list", "watch"]
+
+# Node metrics and status
+- apiGroups: [""]
+  resources: ["nodes/metrics", "nodes/stats", "nodes/proxy"]
+  verbs: ["get", "list", "watch"]
+
+# Pod metrics and logs
+- apiGroups: [""]
+  resources: ["pods/log", "pods/status"]
+  verbs: ["get", "list", "watch"]
+
+# Application resources - read-only
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+  verbs: ["get", "list", "watch"]
+
+# Autoscaling metrics
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+
+# Ingress information
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses", "networkpolicies"]
+  verbs: ["get", "list", "watch"]
+
+# Custom metrics (if using custom metrics API)
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["*"]
+  verbs: ["get", "list"]
+
+# Events for alerting
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "watch"]
+
+---
+# Namespace for monitoring stack
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    purpose: monitoring
+    managed-by: platform-team
+
+---
+# ServiceAccount for Prometheus
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-sa
+  namespace: monitoring
+
+---
+# ServiceAccount for Grafana  
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-sa
+  namespace: monitoring
+
+---
+# ClusterRoleBinding: Prometheus access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-monitoring
+subjects:
+- kind: ServiceAccount
+  name: prometheus-sa
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: monitoring-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ClusterRoleBinding: Grafana access (if using K8s API)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-monitoring
+subjects:
+- kind: ServiceAccount
+  name: grafana-sa
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: monitoring-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Test deployment: Simple Prometheus-like workload
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-collector
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics-collector
+  template:
+    metadata:
+      labels:
+        app: metrics-collector
+    spec:
+      serviceAccountName: prometheus-sa
+      containers:
+      - name: collector
+        image: prom/prometheus:v2.40.0
+        args:
+          - '--config.file=/etc/prometheus/prometheus.yml'
+          - '--storage.tsdb.path=/prometheus/'
+          - '--web.console.libraries=/etc/prometheus/console_libraries'
+          - '--web.console.templates=/etc/prometheus/consoles'
+          - '--web.enable-lifecycle'
+        ports:
+        - containerPort: 9090
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+
+---
+# Test pod to verify monitoring permissions
+apiVersion: v1
+kind: Pod
+metadata:
+  name: monitoring-test
+  namespace: monitoring
+spec:
+  serviceAccountName: prometheus-sa
+  containers:
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command: ["sleep", "3600"]
+    # Test commands:
+    # kubectl auth can-i get pods --all-namespaces (should work)
+    # kubectl auth can-i get nodes (should work)
+    # kubectl auth can-i create pods (should fail)
+    # kubectl auth can-i delete deployments (should fail)
+    # kubectl get pods --all-namespaces (should work)

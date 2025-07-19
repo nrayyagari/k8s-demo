@@ -20,6 +20,7 @@ k8s-examples/
 ├── health-checks/  # Liveness, readiness, and startup probes
 ├── configmaps-secrets/ # Configuration and secrets management
 ├── autoscaling/    # Horizontal Pod Autoscaler examples
+├── rbac/           # Roles, ClusterRoles, and RBAC examples
 └── README.md       # This file
 ```
 
@@ -46,6 +47,10 @@ k8s-examples/
 **5. How does Kubernetes know my app is healthy?** → **Health Probes**
 - Problem: App might be running but broken
 - Solution: Kubernetes checks and acts on failures
+
+**6. Who can do what in my cluster?** → **RBAC (Roles & ClusterRoles)**
+- Problem: Everyone has admin access - security risk
+- Solution: Fine-grained permissions per user/team
 
 ### The 90/10 Rule
 
@@ -83,11 +88,16 @@ kubectl apply -f ingress/03-basic-ingress.yaml
 kubectl apply -f statefulsets/01-basic-statefulset.yaml
 ```
 
+### 6. Secure Your Cluster  
+```bash
+kubectl apply -f rbac/SIMPLE-RBAC.yaml
+```
+
 ## The Pattern: Build Up Gradually
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
-**Level 3**: Add StatefulSets (when needed)
+**Level 3**: Add StatefulSets (when needed) → Add RBAC
 
 Each level solves a specific problem. Don't skip ahead.
 
@@ -129,6 +139,7 @@ kubectl get services
 kubectl get statefulsets
 kubectl get daemonsets
 kubectl get pdb
+kubectl get roles,rolebindings,clusterroles,clusterrolebindings
 ```
 
 ### View pod distribution:
@@ -146,6 +157,11 @@ kubectl exec -it <pod-name> -- curl <service-name>
 kubectl get pdb <pdb-name>
 ```
 
+### Test RBAC permissions:
+```bash
+kubectl auth can-i create pods --as=system:serviceaccount:rbac-demo:demo-sa
+```
+
 ## Clean Up
 
 Remove all resources:
@@ -155,6 +171,7 @@ kubectl delete -f services/
 kubectl delete -f statefulsets/
 kubectl delete -f daemonsets/
 kubectl delete -f pdbs/
+kubectl delete -f rbac/
 ```
 
 ## Notes

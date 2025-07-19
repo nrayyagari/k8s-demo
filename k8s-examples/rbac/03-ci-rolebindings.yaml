@@ -1,0 +1,110 @@
+# CI/CD RoleBindings: Apply ClusterRole to specific namespaces
+# WHY: CI needs deployment access to production and staging, NOT development
+# PATTERN: ClusterRole + Multiple RoleBindings = Selective namespace access
+
+---
+# Production namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    environment: production
+    ci-access: "true"
+
+---
+# Staging namespace  
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    environment: staging
+    ci-access: "true"
+
+---
+# RoleBinding: CI access to PRODUCTION namespace
+# KEY: Uses ClusterRole but scoped to single namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-deployer-production
+  namespace: production
+subjects:
+- kind: ServiceAccount
+  name: ci-deployer-sa
+  namespace: ci-system
+roleRef:
+  kind: ClusterRole  # Referencing ClusterRole, not Role!
+  name: ci-deployer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# RoleBinding: CI access to STAGING namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-deployer-staging
+  namespace: staging
+subjects:
+- kind: ServiceAccount
+  name: ci-deployer-sa
+  namespace: ci-system
+roleRef:
+  kind: ClusterRole  # Same ClusterRole, different namespace
+  name: ci-deployer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Test deployment in production
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+  namespace: production
+  labels:
+    app: webapp
+    environment: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      serviceAccountName: default  # Uses default SA
+      containers:
+      - name: webapp
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# Test pod to verify CI permissions
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ci-test-permissions
+  namespace: ci-system
+spec:
+  serviceAccountName: ci-deployer-sa
+  containers:
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command: ["sleep", "3600"]
+    # Test commands:
+    # kubectl auth can-i create deployments -n production (should work)
+    # kubectl auth can-i create deployments -n staging (should work)  
+    # kubectl auth can-i create deployments -n team-alpha (should fail)
+    # kubectl auth can-i create namespaces (should fail)
+    # kubectl get nodes (should work - read-only)

@@ -1,0 +1,54 @@
+# CI/CD ClusterRole: Reusable deployment permissions
+# WHY: CI/CD systems need to deploy to multiple namespaces with same permissions
+# PATTERN: ClusterRole (template) + Multiple RoleBindings (targeting)
+
+---
+# ClusterRole: Reusable permission template
+# NOTE: No namespace specified - this is a template
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ci-deployer
+rules:
+# Application deployment permissions
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Core resources for applications
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Autoscaling permissions
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Ingress for external access
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Read-only access to nodes for scheduling decisions
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+
+---
+# ServiceAccount for CI/CD system
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-deployer-sa
+  namespace: ci-system
+
+---
+# Create ci-system namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-system
+  labels:
+    purpose: ci-cd
+    managed-by: platform-team
