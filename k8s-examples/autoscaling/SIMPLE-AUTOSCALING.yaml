@@ -1,0 +1,199 @@
+# SIMPLE AUTOSCALING - Quick Start Guide
+# Purpose: Understand HPA vs VPA with practical examples
+
+# This file demonstrates both horizontal (HPA) and vertical (VPA) autoscaling concepts
+# Choose the approach that matches your use case
+
+# =================== HORIZONTAL SCALING (HPA) ===================
+# Use case: Web apps with variable traffic
+# Concept: Add/remove pods based on CPU/memory usage
+
+# App for HPA demonstration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  labels:
+    scaling-type: horizontal
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: 100m        # HPA needs this to calculate percentages
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+
+---
+# Service for web app
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-service
+spec:
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+
+---
+# HPA: Scale OUT (more pods when busy)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-app
+  minReplicas: 2            # Never less than 2
+  maxReplicas: 6            # Never more than 6
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70    # Scale when CPU > 70%
+
+---
+# =================== VERTICAL SCALING (VPA) ===================
+# Use case: Single-instance apps, unknown resource needs
+# Concept: Adjust CPU/memory allocation based on actual usage
+
+# App for VPA demonstration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-app
+  labels:
+    scaling-type: vertical
+spec:
+  replicas: 1               # Single replica - perfect for VPA
+  selector:
+    matchLabels:
+      app: resource-app
+  template:
+    metadata:
+      labels:
+        app: resource-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: 50m         # VPA will optimize these
+            memory: 64Mi     # VPA will optimize these
+
+---
+# VPA: Scale UP (bigger containers when needed)
+# NOTE: VPA requires separate installation - not included by default
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: resource-app-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: resource-app
+  updatePolicy:
+    updateMode: "Off"        # Start with recommendations only (safe)
+  resourcePolicy:
+    containerPolicies:
+    - containerName: nginx
+      maxAllowed:
+        cpu: 1             # Never exceed 1 CPU
+        memory: 1Gi        # Never exceed 1GB
+
+---
+# =================== DECISION GUIDE ===================
+
+# WHEN TO USE HPA (Horizontal Pod Autoscaler):
+# ✅ Web applications with traffic spikes
+# ✅ Stateless microservices  
+# ✅ APIs with variable request load
+# ✅ Apps that start quickly (<30 seconds)
+# ✅ Need high availability (multiple replicas)
+
+# WHEN TO USE VPA (Vertical Pod Autoscaler):
+# ✅ Single-instance applications (databases, caches)
+# ✅ Don't know optimal CPU/memory allocation
+# ✅ Batch jobs with varying resource needs
+# ✅ Development environments (cost optimization)
+# ✅ Can tolerate pod restarts
+
+# =================== QUICK COMMANDS ===================
+
+# Deploy everything:
+# kubectl apply -f SIMPLE-AUTOSCALING.yaml
+
+# Check HPA status:
+# kubectl get hpa web-app-hpa
+# kubectl describe hpa web-app-hpa
+
+# Test HPA scaling (generate load):
+# kubectl run load-test --image=busybox --restart=Never -- /bin/sh -c "while true; do wget -q -O- http://web-app-service; done"
+
+# Watch HPA scaling:
+# kubectl get hpa --watch
+# kubectl get pods --watch
+
+# Check VPA status (if VPA is installed):
+# kubectl get vpa resource-app-vpa
+# kubectl describe vpa resource-app-vpa
+
+# View VPA recommendations (after 24+ hours):
+# kubectl get vpa resource-app-vpa -o yaml | grep -A 10 recommendation
+
+# Clean up load test:
+# kubectl delete pod load-test
+
+# =================== TROUBLESHOOTING ===================
+
+# HPA shows "unknown" metrics:
+# - Check: kubectl top nodes (metrics server installed?)
+# - Ensure: Resource requests are defined in containers
+
+# VPA shows no recommendations:
+# - Check: kubectl get crd verticalpodautoscalers.autoscaling.k8s.io (VPA installed?)
+# - Wait: 24-48 hours for VPA to learn usage patterns
+
+# Neither scaling as expected:
+# - Generate actual load to trigger scaling
+# - Check resource usage: kubectl top pods
+# - Review events: kubectl get events --sort-by='.lastTimestamp'
+
+# =================== NEXT STEPS ===================
+
+# 1. Choose your scaling approach:
+#    - Variable traffic → Use HPA (horizontal scaling)
+#    - Unknown resources → Use VPA (vertical scaling)  
+#    - Both issues → Advanced combination (see detailed guides)
+
+# 2. Explore detailed examples:
+#    - HPA examples: autoscaling/hpa/
+#    - VPA examples: autoscaling/vpa/
+
+# 3. Read comprehensive guides:
+#    - autoscaling/hpa/README.md
+#    - autoscaling/vpa/README.md
+
+# 4. Production considerations:
+#    - Set up monitoring and alerting
+#    - Test scaling behavior under real load
+#    - Combine with resource quotas and limits
