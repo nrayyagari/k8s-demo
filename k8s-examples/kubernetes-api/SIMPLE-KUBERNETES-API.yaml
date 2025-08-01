@@ -1,0 +1,985 @@
+# ====================================================================
+# KUBERNETES API: Understanding the Core Interface
+# ====================================================================
+#
+# WHY: kubectl is convenient but limited; production needs direct API access
+# SOLUTION: Kubernetes API provides programmatic access to all cluster operations
+#
+# KEY POINTS:
+# - RESTful HTTP API for all Kubernetes operations
+# - Authentication via tokens, certificates, or kubeconfig
+# - CRUD operations on all resources with proper RBAC
+# - Watch API for real-time event streaming
+# - Custom resources extend the API surface
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# 1. SERVICE ACCOUNT FOR API ACCESS - Authentication setup
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-client
+  namespace: default
+  annotations:
+    team.company.com/owner: "platform-team"
+    api.company.com/purpose: "automated-operations"
+    api.company.com/rate-limit: "moderate"
+
+---
+# Role defining API permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-client-role
+  namespace: default
+  annotations:
+    rbac.company.com/purpose: "api-automation"
+    rbac.company.com/principle: "least-privilege"
+rules:
+# Pod operations
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Pod logs and exec access
+- apiGroups: [""]
+  resources: ["pods/log", "pods/exec"]
+  verbs: ["get", "create"]
+
+# Service operations
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+# ConfigMap and Secret operations
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "create", "update", "patch"]
+
+# Deployment operations
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Job operations
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Events (read-only for monitoring)
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "watch"]
+
+---
+# RoleBinding connecting ServiceAccount to Role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-client-binding
+  namespace: default
+  annotations:
+    rbac.company.com/created-by: "platform-team"
+    rbac.company.com/purpose: "api-automation-binding"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-client-role
+subjects:
+- kind: ServiceAccount
+  name: api-client
+  namespace: default
+
+---
+# --------------------------------------------------------------------
+# 2. POD WITH API ACCESS - Container that uses the API
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-client-pod
+  namespace: default
+  annotations:
+    team.company.com/owner: "platform-team"
+    api.company.com/client-type: "automation-tool"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-client
+      component: automation
+  template:
+    metadata:
+      labels:
+        app: api-client
+        component: automation
+      annotations:
+        # Security and monitoring annotations
+        security.company.com/api-access: "restricted"
+        monitoring.company.com/api-calls: "true"
+    spec:
+      # Use the service account we created
+      serviceAccountName: api-client
+      
+      containers:
+      - name: api-client
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          print("=== Kubernetes API Client Demo ===")
+          
+          # Install required packages
+          import subprocess
+          subprocess.run(["pip", "install", "kubernetes", "requests"], check=True)
+          
+          import time
+          import json
+          import os
+          from kubernetes import client, config
+          import requests
+          
+          print("Loading in-cluster configuration...")
+          
+          # Load in-cluster config (uses service account token)
+          config.load_incluster_config()
+          
+          # Create API clients
+          v1 = client.CoreV1Api()
+          apps_v1 = client.AppsV1Api()
+          
+          # Get service account token for direct HTTP calls
+          with open('/var/run/secrets/kubernetes.io/serviceaccount/token', 'r') as f:
+            token = f.read()
+          
+          # Kubernetes API server endpoint
+          api_server = "https://kubernetes.default.svc"
+          headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          }
+          
+          print("\n=== API Discovery Examples ===")
+          
+          # 1. List API groups
+          print("1. Available API groups:")
+          try:
+            response = requests.get(f"{api_server}/apis", headers=headers, verify=False)
+            if response.status_code == 200:
+              apis = response.json()
+              for group in apis.get('groups', []):
+                print(f"  - {group['name']}: {group['preferredVersion']['version']}")
+          except Exception as e:
+            print(f"Error listing API groups: {e}")
+          
+          # 2. List resources in core API
+          print("\n2. Core API resources:")
+          try:
+            api_resources = v1.get_api_resources()
+            for resource in api_resources.resources[:10]:  # First 10
+              print(f"  - {resource.name} ({resource.kind})")
+          except Exception as e:
+            print(f"Error listing core resources: {e}")
+          
+          print("\n=== Resource Operations Examples ===")
+          
+          # 3. List pods in current namespace
+          print("3. Pods in current namespace:")
+          try:
+            pods = v1.list_namespaced_pod(namespace='default')
+            for pod in pods.items:
+              phase = pod.status.phase if pod.status else "Unknown"
+              print(f"  - {pod.metadata.name}: {phase}")
+          except Exception as e:
+            print(f"Error listing pods: {e}")
+          
+          # 4. Create a simple pod via API
+          print("\n4. Creating a test pod via API...")
+          
+          pod_manifest = {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "name": "api-test-pod",
+              "labels": {
+                "created-by": "api-client",
+                "purpose": "api-demo"
+              }
+            },
+            "spec": {
+              "restartPolicy": "Never",
+              "containers": [{
+                "name": "test-container",
+                "image": "busybox:1.36",
+                "command": ["sh", "-c", "echo 'Hello from API-created pod!' && sleep 30"]
+              }]
+            }
+          }
+          
+          try:
+            # Create pod using Python client
+            pod_obj = client.V1Pod(
+              api_version="v1",
+              kind="Pod",
+              metadata=client.V1ObjectMeta(
+                name="api-test-pod",
+                labels={"created-by": "api-client", "purpose": "api-demo"}
+              ),
+              spec=client.V1PodSpec(
+                restart_policy="Never",
+                containers=[
+                  client.V1Container(
+                    name="test-container",
+                    image="busybox:1.36",
+                    command=["sh", "-c", "echo 'Hello from API-created pod!' && sleep 30"]
+                  )
+                ]
+              )
+            )
+            
+            result = v1.create_namespaced_pod(namespace='default', body=pod_obj)
+            print(f"  Pod created: {result.metadata.name}")
+            
+          except client.rest.ApiException as e:
+            if e.status == 409:
+              print("  Pod already exists")
+            else:
+              print(f"  Error creating pod: {e}")
+          except Exception as e:
+            print(f"  Unexpected error: {e}")
+          
+          # 5. Watch pod events
+          print("\n5. Watching for pod events (30 seconds)...")
+          try:
+            from kubernetes import watch
+            w = watch.Watch()
+            
+            timeout_seconds = 30
+            for event in w.stream(v1.list_namespaced_pod, namespace='default', timeout_seconds=timeout_seconds):
+              event_type = event['type']
+              pod = event['object']
+              pod_name = pod.metadata.name
+              phase = pod.status.phase if pod.status else "Unknown"
+              
+              print(f"  {event_type}: {pod_name} is {phase}")
+              
+              # Stop watching after we see our test pod
+              if pod_name == "api-test-pod" and phase in ["Succeeded", "Failed"]:
+                break
+                
+          except Exception as e:
+            print(f"  Error watching events: {e}")
+          
+          # 6. Direct HTTP API calls
+          print("\n6. Direct HTTP API call examples:")
+          
+          # List deployments via HTTP
+          try:
+            response = requests.get(
+              f"{api_server}/apis/apps/v1/namespaces/default/deployments",
+              headers=headers,
+              verify=False
+            )
+            if response.status_code == 200:
+              deployments = response.json()
+              print(f"  Found {len(deployments.get('items', []))} deployments via HTTP API")
+              for deploy in deployments.get('items', [])[:3]:  # First 3
+                name = deploy['metadata']['name']
+                replicas = deploy['status'].get('replicas', 0)
+                ready = deploy['status'].get('readyReplicas', 0)
+                print(f"    - {name}: {ready}/{replicas} ready")
+          except Exception as e:
+            print(f"  Error with HTTP API call: {e}")
+          
+          # 7. Get cluster information
+          print("\n7. Cluster information:")
+          try:
+            # Get nodes (requires cluster-level permissions, may fail)
+            try:
+              nodes = v1.list_node()
+              print(f"  Cluster has {len(nodes.items)} nodes")
+            except client.rest.ApiException as e:
+              if e.status == 403:
+                print("  Cannot list nodes (insufficient permissions)")
+              else:
+                print(f"  Error listing nodes: {e}")
+            
+            # Get namespaces (requires cluster-level permissions, may fail)
+            try:
+              namespaces = v1.list_namespace()
+              print(f"  Cluster has {len(namespaces.items)} namespaces")
+            except client.rest.ApiException as e:
+              if e.status == 403:
+                print("  Cannot list namespaces (insufficient permissions)")
+              else:
+                print(f"  Error listing namespaces: {e}")
+                
+          except Exception as e:
+            print(f"  Error getting cluster info: {e}")
+          
+          # 8. Cleanup test pod
+          print("\n8. Cleaning up test pod...")
+          try:
+            v1.delete_namespaced_pod(name="api-test-pod", namespace="default")
+            print("  Test pod deleted successfully")
+          except client.rest.ApiException as e:
+            if e.status == 404:
+              print("  Test pod not found (already deleted)")
+            else:
+              print(f"  Error deleting test pod: {e}")
+          except Exception as e:
+            print(f"  Unexpected error during cleanup: {e}")
+          
+          print("\n=== API Client Demo Complete ===")
+          print("This pod demonstrates:")
+          print("- In-cluster authentication with service accounts")
+          print("- API discovery and resource listing")
+          print("- Creating and managing resources via API")
+          print("- Watching for real-time events")
+          print("- Direct HTTP API calls vs Python client")
+          print("- Proper error handling and permissions")
+          
+          # Keep container running for manual inspection
+          print("\nContainer will stay running for 10 minutes for inspection...")
+          time.sleep(600)
+        
+        # Environment variables
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: KUBERNETES_SERVICE_HOST
+          value: "kubernetes.default.svc"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "443"
+        
+        # Resource limits
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Need to install packages
+          capabilities:
+            drop: ["ALL"]
+      
+      # Security and networking
+      securityContext:
+        fsGroup: 2000
+
+---
+# --------------------------------------------------------------------
+# 3. CUSTOM RESOURCE DEFINITION - Extend the API
+# --------------------------------------------------------------------
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: webapps.demo.company.com
+  annotations:
+    team.company.com/owner: "platform-team"
+    api.company.com/purpose: "custom-resource-demo"
+    api.company.com/version: "v1"
+spec:
+  # API group name
+  group: demo.company.com
+  
+  # Supported versions
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    
+    # OpenAPI schema for validation
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              # Application configuration
+              replicas:
+                type: integer
+                minimum: 1
+                maximum: 10
+                description: "Number of application replicas"
+              
+              image:
+                type: string
+                description: "Container image for the application"
+                pattern: "^[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$"
+              
+              port:
+                type: integer
+                minimum: 1
+                maximum: 65535
+                description: "Application port"
+              
+              # Resource requirements
+              resources:
+                type: object
+                properties:
+                  cpu:
+                    type: string
+                    description: "CPU request (e.g., 100m, 1)"
+                  memory:
+                    type: string
+                    description: "Memory request (e.g., 128Mi, 1Gi)"
+              
+              # Environment configuration
+              environment:
+                type: string
+                enum: ["development", "staging", "production"]
+                description: "Deployment environment"
+              
+              # Optional features
+              enableMetrics:
+                type: boolean
+                default: false
+                description: "Enable Prometheus metrics"
+              
+              healthCheck:
+                type: object
+                properties:
+                  path:
+                    type: string
+                    default: "/health"
+                  port:
+                    type: integer
+                    default: 8080
+            
+            # Required fields
+            required:
+            - image
+            - port
+            - environment
+          
+          # Status subresource (managed by controller)
+          status:
+            type: object
+            properties:
+              # Deployment status
+              phase:
+                type: string
+                enum: ["Pending", "Running", "Failed", "Succeeded"]
+              
+              # Replica status
+              replicas:
+                type: integer
+              readyReplicas:
+                type: integer
+              
+              # Conditions
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                      enum: ["True", "False", "Unknown"]
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+                  required:
+                  - type
+                  - status
+              
+              # Last update timestamp
+              lastUpdated:
+                type: string
+                format: date-time
+    
+    # Subresources
+    subresources:
+      # Enable status subresource
+      status: {}
+      
+      # Enable scale subresource
+      scale:
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
+        labelSelectorPath: .status.labelSelector
+    
+    # Additional printer columns for kubectl get
+    additionalPrinterColumns:
+    - name: Replicas
+      type: integer
+      description: "Desired number of replicas"
+      jsonPath: .spec.replicas
+    - name: Ready
+      type: integer
+      description: "Number of ready replicas"
+      jsonPath: .status.readyReplicas
+    - name: Environment
+      type: string
+      description: "Deployment environment"
+      jsonPath: .spec.environment
+    - name: Image
+      type: string
+      description: "Container image"
+      jsonPath: .spec.image
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+  
+  # Resource scope and names
+  scope: Namespaced
+  names:
+    plural: webapps
+    singular: webapp
+    kind: WebApp
+    shortNames:
+    - wa
+    - webapps
+    categories:
+    - all
+
+---
+# --------------------------------------------------------------------
+# 4. CUSTOM RESOURCE INSTANCES - Using the extended API
+# --------------------------------------------------------------------
+
+# Development WebApp instance
+apiVersion: demo.company.com/v1
+kind: WebApp
+metadata:
+  name: dev-webapp
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dev-webapp
+    app.kubernetes.io/instance: development
+    app.kubernetes.io/component: web-server
+    environment: development
+  annotations:
+    team.company.com/owner: "frontend-team"
+    deployment.company.com/strategy: "rolling-update"
+spec:
+  replicas: 2
+  image: nginx:1.21-alpine
+  port: 80
+  environment: development
+  
+  resources:
+    cpu: "100m"
+    memory: "128Mi"
+  
+  enableMetrics: true
+  
+  healthCheck:
+    path: "/health"
+    port: 80
+
+---
+# Production WebApp instance
+apiVersion: demo.company.com/v1
+kind: WebApp
+metadata:
+  name: prod-webapp
+  namespace: default
+  labels:
+    app.kubernetes.io/name: prod-webapp
+    app.kubernetes.io/instance: production
+    app.kubernetes.io/component: web-server
+    environment: production
+  annotations:
+    team.company.com/owner: "frontend-team"
+    deployment.company.com/strategy: "blue-green"
+    monitoring.company.com/level: "enhanced"
+    backup.company.com/enabled: "true"
+spec:
+  replicas: 5
+  image: nginx:1.22-alpine
+  port: 80
+  environment: production
+  
+  resources:
+    cpu: "200m"
+    memory: "256Mi"
+  
+  enableMetrics: true
+  
+  healthCheck:
+    path: "/health"
+    port: 80
+
+---
+# --------------------------------------------------------------------
+# 5. CLUSTER ROLE FOR API DISCOVERY - Broader permissions
+# --------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: api-explorer
+  annotations:
+    rbac.company.com/purpose: "api-discovery-and-monitoring"
+    rbac.company.com/scope: "cluster-wide-read-only"
+rules:
+# Core API discovery
+- apiGroups: [""]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+
+# Apps API discovery
+- apiGroups: ["apps"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+
+# Batch API discovery
+- apiGroups: ["batch"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+
+# Networking API discovery
+- apiGroups: ["networking.k8s.io"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+
+# Custom resources discovery
+- apiGroups: ["demo.company.com"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+
+# API extensions
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "watch"]
+
+# Metrics and monitoring
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["*"]
+  verbs: ["get", "list"]
+
+# Node information
+- apiGroups: [""]
+  resources: ["nodes", "nodes/status"]
+  verbs: ["get", "list", "watch"]
+
+# Cluster-level resources
+- apiGroups: [""]
+  resources: ["namespaces", "persistentvolumes"]
+  verbs: ["get", "list", "watch"]
+
+# RBAC information
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding for broader API access (use carefully!)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: api-explorer-binding
+  annotations:
+    rbac.company.com/purpose: "api-discovery-access"
+    rbac.company.com/warning: "cluster-wide-read-access"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: api-explorer
+subjects:
+- kind: ServiceAccount
+  name: api-client
+  namespace: default
+
+---
+# --------------------------------------------------------------------
+# 6. MONITORING POD - API usage monitoring
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-monitor
+  namespace: default
+  annotations:
+    team.company.com/owner: "platform-team"
+    monitoring.company.com/purpose: "api-usage-tracking"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-monitor
+      component: monitoring
+  template:
+    metadata:
+      labels:
+        app: api-monitor
+        component: monitoring
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: api-client
+      
+      containers:
+      - name: monitor
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          print("=== Kubernetes API Monitor ===")
+          
+          # Install required packages
+          import subprocess
+          subprocess.run(["pip", "install", "kubernetes", "prometheus_client"], check=True)
+          
+          import time
+          import threading
+          from kubernetes import client, config, watch
+          from prometheus_client import start_http_server, Counter, Gauge, Histogram
+          import json
+          
+          # Load configuration
+          config.load_incluster_config()
+          v1 = client.CoreV1Api()
+          apps_v1 = client.AppsV1Api()
+          
+          # Prometheus metrics
+          api_calls_total = Counter('k8s_api_calls_total', 'Total API calls', ['operation', 'resource'])
+          resource_count = Gauge('k8s_resource_count', 'Resource count', ['resource', 'namespace'])
+          api_response_time = Histogram('k8s_api_response_seconds', 'API response time', ['operation'])
+          
+          # Start Prometheus metrics server
+          start_http_server(8080)
+          print("Prometheus metrics server started on port 8080")
+          
+          def collect_metrics():
+            """Collect cluster metrics periodically"""
+            while True:
+              try:
+                start_time = time.time()
+                
+                # Count pods per namespace
+                namespaces = v1.list_namespace()
+                for ns in namespaces.items:
+                  ns_name = ns.metadata.name
+                  
+                  pods = v1.list_namespaced_pod(namespace=ns_name)
+                  resource_count.labels(resource='pods', namespace=ns_name).set(len(pods.items))
+                  
+                  deployments = apps_v1.list_namespaced_deployment(namespace=ns_name)
+                  resource_count.labels(resource='deployments', namespace=ns_name).set(len(deployments.items))
+                
+                # Record API call
+                api_calls_total.labels(operation='list', resource='pods').inc()
+                api_calls_total.labels(operation='list', resource='deployments').inc()
+                
+                # Record response time
+                response_time = time.time() - start_time
+                api_response_time.labels(operation='list').observe(response_time)
+                
+                print(f"Metrics collected in {response_time:.2f}s")
+                
+              except Exception as e:
+                print(f"Error collecting metrics: {e}")
+              
+              time.sleep(60)  # Collect every minute
+          
+          def watch_events():
+            """Watch cluster events"""
+            w = watch.Watch()
+            
+            print("Starting event watcher...")
+            
+            try:
+              for event in w.stream(v1.list_event_for_all_namespaces):
+                event_type = event['type']
+                event_obj = event['object']
+                
+                # Record event
+                api_calls_total.labels(operation='watch', resource='events').inc()
+                
+                # Log important events
+                if event_obj.type in ['Warning', 'Error']:
+                  print(f"EVENT: {event_obj.type} - {event_obj.reason}: {event_obj.message}")
+                
+            except Exception as e:
+              print(f"Event watcher error: {e}")
+          
+          # Start background threads
+          metrics_thread = threading.Thread(target=collect_metrics)
+          metrics_thread.daemon = True
+          metrics_thread.start()
+          
+          events_thread = threading.Thread(target=watch_events)
+          events_thread.daemon = True
+          events_thread.start()
+          
+          print("API monitoring started. Metrics available at :8080/metrics")
+          
+          # Keep main thread alive
+          try:
+            while True:
+              time.sleep(10)
+          except KeyboardInterrupt:
+            print("Shutting down API monitor...")
+        
+        ports:
+        - containerPort: 8080
+          name: metrics
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+
+---
+# Service for API monitor metrics
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-monitor-service
+  namespace: default
+  labels:
+    app: api-monitor
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: api-monitor
+    component: monitoring
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# ====================================================================
+# TESTING AND USAGE COMMANDS
+# ====================================================================
+#
+# After applying these resources, test with these commands:
+#
+# 1. CHECK SERVICE ACCOUNT AND PERMISSIONS:
+# kubectl describe serviceaccount api-client
+# kubectl describe role api-client-role
+# kubectl describe rolebinding api-client-binding
+#
+# 2. TEST API ACCESS FROM POD:
+# kubectl logs -f deployment/api-client-pod
+# kubectl exec -it deployment/api-client-pod -- python3 -c "
+#   from kubernetes import client, config
+#   config.load_incluster_config()
+#   v1 = client.CoreV1Api()
+#   pods = v1.list_namespaced_pod(namespace='default')
+#   print(f'Found {len(pods.items)} pods')
+# "
+#
+# 3. ACCESS API VIA KUBECTL PROXY:
+# kubectl proxy --port=8080 &
+# curl http://localhost:8080/api/v1/namespaces/default/pods
+# curl http://localhost:8080/apis/apps/v1/namespaces/default/deployments
+#
+# 4. WORK WITH CUSTOM RESOURCES:
+# kubectl get webapps
+# kubectl describe webapp dev-webapp
+# kubectl get webapp dev-webapp -o yaml
+# kubectl patch webapp dev-webapp -p '{"spec":{"replicas":3}}'
+#
+# 5. API DISCOVERY:
+# kubectl api-resources | grep demo.company.com
+# kubectl api-versions | grep demo
+# kubectl explain webapp
+# kubectl explain webapp.spec
+#
+# 6. MONITOR API METRICS:
+# kubectl port-forward service/api-monitor-service 8080:8080
+# curl http://localhost:8080/metrics | grep k8s_
+#
+# 7. DIRECT API CALLS WITH AUTHENTICATION:
+# TOKEN=$(kubectl create token api-client)
+# curl -H "Authorization: Bearer $TOKEN" \
+#   https://kubernetes-api:6443/api/v1/namespaces/default/pods
+#
+# 8. WATCH API EVENTS:
+# kubectl get events --watch
+# curl "http://localhost:8080/api/v1/namespaces/default/pods?watch=true"
+#
+# ====================================================================
+
+# KEY LEARNING POINTS:
+#
+# 1. API STRUCTURE:
+#    - /api/v1 for core resources (pods, services, etc.)
+#    - /apis/{group}/{version} for extension APIs
+#    - Resources have metadata, spec, and status sections
+#    - Subresources like logs, exec, status, scale
+#
+# 2. AUTHENTICATION:
+#    - Service account tokens for in-cluster access
+#    - kubeconfig for external access
+#    - Bearer tokens in HTTP Authorization header
+#    - Client certificates for mutual TLS
+#
+# 3. AUTHORIZATION (RBAC):
+#    - Roles define permissions on resources
+#    - RoleBindings connect users/service accounts to roles
+#    - Cluster-level permissions require ClusterRole/ClusterRoleBinding
+#    - Follow principle of least privilege
+#
+# 4. API OPERATIONS:
+#    - GET for reading resources (single or list)
+#    - POST for creating resources
+#    - PUT for full resource updates
+#    - PATCH for partial updates
+#    - DELETE for resource removal
+#
+# 5. CUSTOM RESOURCES:
+#    - CRDs extend the API with new resource types
+#    - Follow same patterns as built-in resources
+#    - Support validation, subresources, and versioning
+#    - Enable domain-specific APIs
+#
+# 6. WATCH API:
+#    - Real-time event streaming for resource changes
+#    - Essential for controllers and monitoring
+#    - Use resource versions for consistency
+#    - Handle connection failures and reconnection
+#
+# 7. BEST PRACTICES:
+#    - Use appropriate authentication and minimal permissions
+#    - Implement proper error handling and retries
+#    - Use client libraries instead of raw HTTP when possible
+#    - Monitor API usage and implement rate limiting
+#    - Cache frequently accessed data using watch API
+#
+# ====================================================================

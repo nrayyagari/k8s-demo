@@ -1,0 +1,1230 @@
+# ====================================================================
+# CUSTOM RESOURCES: Extending Kubernetes API with Domain-Specific Objects
+# ====================================================================
+#
+# Pattern: Using Custom Resource Definitions (CRDs) to extend Kubernetes API
+# Use Cases: Application configuration, operators, domain-specific resources
+# Key Point: Custom resources follow same patterns as built-in Kubernetes resources
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# 1. ADVANCED WEB APPLICATION CRD - Complete production example
+# --------------------------------------------------------------------
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: webapplications.platform.company.com
+  annotations:
+    team.company.com/owner: "platform-team"
+    api.company.com/purpose: "web-application-management"
+    api.company.com/version: "v1beta1"
+spec:
+  group: platform.company.com
+  
+  versions:
+  - name: v1beta1
+    served: true
+    storage: true
+    
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              # Application configuration
+              application:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: "Application name"
+                    minLength: 3
+                    maxLength: 50
+                    pattern: "^[a-z0-9-]+$"
+                  
+                  version:
+                    type: string
+                    description: "Application version"
+                    pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+                  
+                  image:
+                    type: string
+                    description: "Container image"
+                    pattern: "^[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$"
+                  
+                  port:
+                    type: integer
+                    description: "Application port"
+                    minimum: 1
+                    maximum: 65535
+                    default: 8080
+                  
+                  command:
+                    type: array
+                    description: "Override container command"
+                    items:
+                      type: string
+                  
+                  args:
+                    type: array
+                    description: "Container arguments"
+                    items:
+                      type: string
+                
+                required: ["name", "version", "image"]
+              
+              # Deployment configuration
+              deployment:
+                type: object
+                properties:
+                  replicas:
+                    type: integer
+                    description: "Number of replicas"
+                    minimum: 1
+                    maximum: 100
+                    default: 3
+                  
+                  strategy:
+                    type: string
+                    description: "Deployment strategy"
+                    enum: ["RollingUpdate", "Recreate", "BlueGreen", "Canary"]
+                    default: "RollingUpdate"
+                  
+                  maxUnavailable:
+                    type: string
+                    description: "Max unavailable during rolling update"
+                    default: "25%"
+                  
+                  maxSurge:
+                    type: string
+                    description: "Max surge during rolling update"
+                    default: "25%"
+                  
+                  progressDeadlineSeconds:
+                    type: integer
+                    description: "Progress deadline in seconds"
+                    minimum: 60
+                    maximum: 3600
+                    default: 600
+              
+              # Resource requirements
+              resources:
+                type: object
+                properties:
+                  requests:
+                    type: object
+                    properties:
+                      cpu:
+                        type: string
+                        description: "CPU request"
+                        pattern: "^[0-9]+m?$|^[0-9]*\\.?[0-9]+$"
+                        default: "100m"
+                      memory:
+                        type: string
+                        description: "Memory request"
+                        pattern: "^[0-9]+[KMGT]?i?$"
+                        default: "128Mi"
+                  
+                  limits:
+                    type: object
+                    properties:
+                      cpu:
+                        type: string
+                        description: "CPU limit"
+                        pattern: "^[0-9]+m?$|^[0-9]*\\.?[0-9]+$"
+                        default: "500m"
+                      memory:
+                        type: string
+                        description: "Memory limit"
+                        pattern: "^[0-9]+[KMGT]?i?$"
+                        default: "512Mi"
+              
+              # Environment and configuration
+              environment:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: "Environment name"
+                    enum: ["development", "staging", "production"]
+                  
+                  variables:
+                    type: object
+                    description: "Environment variables"
+                    additionalProperties:
+                      type: string
+                  
+                  configMaps:
+                    type: array
+                    description: "ConfigMaps to mount"
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        mountPath:
+                          type: string
+                        readOnly:
+                          type: boolean
+                          default: true
+                      required: ["name", "mountPath"]
+                  
+                  secrets:
+                    type: array
+                    description: "Secrets to mount"
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        mountPath:
+                          type: string
+                        readOnly:
+                          type: boolean
+                          default: true
+                      required: ["name", "mountPath"]
+              
+              # Service configuration
+              service:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Create service"
+                    default: true
+                  
+                  type:
+                    type: string
+                    description: "Service type"
+                    enum: ["ClusterIP", "NodePort", "LoadBalancer"]
+                    default: "ClusterIP"
+                  
+                  ports:
+                    type: array
+                    description: "Service ports"
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        port:
+                          type: integer
+                          minimum: 1
+                          maximum: 65535
+                        targetPort:
+                          type: integer
+                          minimum: 1
+                          maximum: 65535
+                        protocol:
+                          type: string
+                          enum: ["TCP", "UDP"]
+                          default: "TCP"
+                      required: ["port"]
+                  
+                  annotations:
+                    type: object
+                    description: "Service annotations"
+                    additionalProperties:
+                      type: string
+              
+              # Ingress configuration
+              ingress:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Create ingress"
+                    default: false
+                  
+                  className:
+                    type: string
+                    description: "Ingress class name"
+                    default: "nginx"
+                  
+                  hosts:
+                    type: array
+                    description: "Ingress hosts"
+                    items:
+                      type: object
+                      properties:
+                        host:
+                          type: string
+                          description: "Hostname"
+                        paths:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              path:
+                                type: string
+                                default: "/"
+                              pathType:
+                                type: string
+                                enum: ["Exact", "Prefix", "ImplementationSpecific"]
+                                default: "Prefix"
+                            required: ["path"]
+                      required: ["host"]
+                  
+                  tls:
+                    type: array
+                    description: "TLS configuration"
+                    items:
+                      type: object
+                      properties:
+                        secretName:
+                          type: string
+                        hosts:
+                          type: array
+                          items:
+                            type: string
+                      required: ["secretName", "hosts"]
+              
+              # Health checks
+              healthChecks:
+                type: object
+                properties:
+                  livenessProbe:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: true
+                      path:
+                        type: string
+                        default: "/health"
+                      port:
+                        type: integer
+                        minimum: 1
+                        maximum: 65535
+                      initialDelaySeconds:
+                        type: integer
+                        minimum: 1
+                        maximum: 300
+                        default: 30
+                      periodSeconds:
+                        type: integer
+                        minimum: 1
+                        maximum: 300
+                        default: 10
+                      timeoutSeconds:
+                        type: integer
+                        minimum: 1
+                        maximum: 60
+                        default: 5
+                      failureThreshold:
+                        type: integer
+                        minimum: 1
+                        maximum: 10
+                        default: 3
+                  
+                  readinessProbe:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: true
+                      path:
+                        type: string
+                        default: "/ready"
+                      port:
+                        type: integer
+                        minimum: 1
+                        maximum: 65535
+                      initialDelaySeconds:
+                        type: integer
+                        minimum: 1
+                        maximum: 300
+                        default: 5
+                      periodSeconds:
+                        type: integer
+                        minimum: 1
+                        maximum: 300
+                        default: 10
+                      timeoutSeconds:
+                        type: integer
+                        minimum: 1
+                        maximum: 60
+                        default: 5
+                      failureThreshold:
+                        type: integer
+                        minimum: 1
+                        maximum: 10
+                        default: 3
+              
+              # Monitoring and observability
+              monitoring:
+                type: object
+                properties:
+                  metrics:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: false
+                      path:
+                        type: string
+                        default: "/metrics"
+                      port:
+                        type: integer
+                        minimum: 1
+                        maximum: 65535
+                        default: 9090
+                      serviceMonitor:
+                        type: boolean
+                        description: "Create Prometheus ServiceMonitor"
+                        default: false
+                  
+                  logging:
+                    type: object
+                    properties:
+                      level:
+                        type: string
+                        enum: ["debug", "info", "warn", "error"]
+                        default: "info"
+                      format:
+                        type: string
+                        enum: ["json", "text"]
+                        default: "json"
+                      output:
+                        type: string
+                        enum: ["stdout", "file", "syslog"]
+                        default: "stdout"
+            
+            required: ["application", "environment"]
+          
+          # Status subresource (managed by controller)
+          status:
+            type: object
+            properties:
+              # Overall status
+              phase:
+                type: string
+                enum: ["Pending", "Deploying", "Running", "Failed", "Scaling", "Updating"]
+              
+              # Deployment status
+              replicas:
+                type: integer
+                description: "Total desired replicas"
+              readyReplicas:
+                type: integer
+                description: "Number of ready replicas"
+              availableReplicas:
+                type: integer
+                description: "Number of available replicas"
+              updatedReplicas:
+                type: integer
+                description: "Number of updated replicas"
+              
+              # Resource URLs
+              urls:
+                type: object
+                properties:
+                  application:
+                    type: string
+                    description: "Application URL"
+                  metrics:
+                    type: string
+                    description: "Metrics endpoint URL"
+                  health:
+                    type: string
+                    description: "Health check URL"
+              
+              # Conditions
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum: ["Ready", "Progressing", "Available", "ReplicaFailure"]
+                    status:
+                      type: string
+                      enum: ["True", "False", "Unknown"]
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    lastUpdateTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+                  required: ["type", "status"]
+              
+              # Observed generation
+              observedGeneration:
+                type: integer
+                description: "Last observed generation"
+              
+              # Last update timestamp
+              lastUpdated:
+                type: string
+                format: date-time
+    
+    # Subresources
+    subresources:
+      status: {}
+      scale:
+        specReplicasPath: .spec.deployment.replicas
+        statusReplicasPath: .status.replicas
+        labelSelectorPath: .status.labelSelector
+    
+    # Additional printer columns for kubectl get
+    additionalPrinterColumns:
+    - name: Phase
+      type: string
+      description: "Application phase"
+      jsonPath: .status.phase
+    - name: Replicas
+      type: string
+      description: "Desired/Ready replicas"
+      jsonPath: .status.replicas
+    - name: Ready
+      type: integer
+      description: "Ready replicas"
+      jsonPath: .status.readyReplicas
+    - name: Environment
+      type: string
+      description: "Environment"
+      jsonPath: .spec.environment.name
+    - name: Version
+      type: string
+      description: "Application version"
+      jsonPath: .spec.application.version
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+  
+  scope: Namespaced
+  names:
+    plural: webapplications
+    singular: webapplication
+    kind: WebApplication
+    shortNames: ["webapp", "webapps"]
+    categories: ["all", "platform"]
+
+---
+# --------------------------------------------------------------------
+# 2. DATABASE SCHEMA CRD - Database resource management
+# --------------------------------------------------------------------
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: databaseschemas.data.company.com
+  annotations:
+    team.company.com/owner: "data-team"
+    api.company.com/purpose: "database-schema-management"
+spec:
+  group: data.company.com
+  
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              # Database connection
+              database:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: ["postgresql", "mysql", "mongodb", "redis"]
+                  host:
+                    type: string
+                  port:
+                    type: integer
+                    minimum: 1
+                    maximum: 65535
+                  name:
+                    type: string
+                  credentialsSecret:
+                    type: string
+                    description: "Secret containing username/password"
+                required: ["type", "host", "name", "credentialsSecret"]
+              
+              # Schema definition
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    description: "Schema version"
+                  migrations:
+                    type: array
+                    description: "Migration scripts"
+                    items:
+                      type: object
+                      properties:
+                        version:
+                          type: string
+                        name:
+                          type: string
+                        sql:
+                          type: string
+                        rollback:
+                          type: string
+                      required: ["version", "name", "sql"]
+                  
+                  tables:
+                    type: array
+                    description: "Table definitions"
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        columns:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              type:
+                                type: string
+                              nullable:
+                                type: boolean
+                                default: true
+                              primaryKey:
+                                type: boolean
+                                default: false
+                            required: ["name", "type"]
+                        indexes:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              columns:
+                                type: array
+                                items:
+                                  type: string
+                              unique:
+                                type: boolean
+                                default: false
+                            required: ["name", "columns"]
+                      required: ["name", "columns"]
+                
+                required: ["version"]
+              
+              # Backup configuration
+              backup:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    default: true
+                  schedule:
+                    type: string
+                    description: "Cron schedule for backups"
+                    default: "0 2 * * *"
+                  retention:
+                    type: string
+                    description: "Backup retention period"
+                    default: "30d"
+                  storage:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                        enum: ["s3", "gcs", "azure", "nfs"]
+                      bucket:
+                        type: string
+                      path:
+                        type: string
+                    required: ["type"]
+            
+            required: ["database", "schema"]
+          
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum: ["Pending", "Creating", "Ready", "Migrating", "Error"]
+              currentVersion:
+                type: string
+              appliedMigrations:
+                type: array
+                items:
+                  type: string
+              lastBackup:
+                type: string
+                format: date-time
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                      enum: ["True", "False", "Unknown"]
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+    
+    subresources:
+      status: {}
+    
+    additionalPrinterColumns:
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Database
+      type: string
+      jsonPath: .spec.database.type
+    - name: Version
+      type: string
+      jsonPath: .status.currentVersion
+    - name: Last Backup
+      type: string
+      jsonPath: .status.lastBackup
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+  
+  scope: Namespaced
+  names:
+    plural: databaseschemas
+    singular: databaseschema
+    kind: DatabaseSchema
+    shortNames: ["dbschema", "schema"]
+
+---
+# --------------------------------------------------------------------
+# 3. MONITORING RULE CRD - Custom alerting rules
+# --------------------------------------------------------------------
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: alertrules.monitoring.company.com
+  annotations:
+    team.company.com/owner: "sre-team"
+    api.company.com/purpose: "custom-alerting-rules"
+spec:
+  group: monitoring.company.com
+  
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              # Rule metadata
+              rule:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: "Rule name"
+                  severity:
+                    type: string
+                    enum: ["critical", "warning", "info"]
+                  summary:
+                    type: string
+                    description: "Alert summary"
+                  description:
+                    type: string
+                    description: "Detailed description"
+                  runbook:
+                    type: string
+                    description: "Runbook URL"
+                required: ["name", "severity", "summary"]
+              
+              # Query and conditions
+              query:
+                type: object
+                properties:
+                  expression:
+                    type: string
+                    description: "PromQL expression"
+                  duration:
+                    type: string
+                    description: "Duration threshold"
+                    default: "5m"
+                  labels:
+                    type: object
+                    description: "Additional labels"
+                    additionalProperties:
+                      type: string
+                required: ["expression"]
+              
+              # Notification settings
+              notifications:
+                type: object
+                properties:
+                  channels:
+                    type: array
+                    description: "Notification channels"
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum: ["slack", "email", "pagerduty", "webhook"]
+                        config:
+                          type: object
+                          additionalProperties:
+                            type: string
+                      required: ["type"]
+                  
+                  throttle:
+                    type: string
+                    description: "Notification throttle period"
+                    default: "1h"
+              
+              # Scheduling
+              schedule:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                    default: true
+                  timezone:
+                    type: string
+                    default: "UTC"
+                  activeHours:
+                    type: object
+                    properties:
+                      start:
+                        type: string
+                        pattern: "^([01]?[0-9]|2[0-3]):[0-5][0-9]$"
+                      end:
+                        type: string
+                        pattern: "^([01]?[0-9]|2[0-3]):[0-5][0-9]$"
+                  
+                  activeDays:
+                    type: array
+                    items:
+                      type: string
+                      enum: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+            
+            required: ["rule", "query"]
+          
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum: ["Active", "Inactive", "Error"]
+              lastFired:
+                type: string
+                format: date-time
+              fireCount:
+                type: integer
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                      enum: ["True", "False", "Unknown"]
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    message:
+                      type: string
+    
+    subresources:
+      status: {}
+    
+    additionalPrinterColumns:
+    - name: Severity
+      type: string
+      jsonPath: .spec.rule.severity
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Last Fired
+      type: string
+      jsonPath: .status.lastFired
+    - name: Fire Count
+      type: integer
+      jsonPath: .status.fireCount
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+  
+  scope: Namespaced
+  names:
+    plural: alertrules
+    singular: alertrule
+    kind: AlertRule
+    shortNames: ["alert", "rule"]
+
+---
+# --------------------------------------------------------------------
+# 4. CUSTOM RESOURCE INSTANCES - Using the extended APIs
+# --------------------------------------------------------------------
+
+# Production Web Application
+apiVersion: platform.company.com/v1beta1
+kind: WebApplication
+metadata:
+  name: ecommerce-api
+  namespace: default
+  labels:
+    app.kubernetes.io/name: ecommerce-api
+    app.kubernetes.io/version: v2.1.0
+    app.kubernetes.io/component: api-server
+    environment: production
+  annotations:
+    team.company.com/owner: "ecommerce-team"
+    deployment.company.com/strategy: "blue-green"
+    monitoring.company.com/level: "enhanced"
+spec:
+  application:
+    name: "ecommerce-api"
+    version: "v2.1.0"
+    image: "ecommerce/api:v2.1.0"
+    port: 8080
+    command: ["/app/api-server"]
+    args: ["--config=/etc/config/app.yaml", "--port=8080"]
+  
+  deployment:
+    replicas: 5
+    strategy: "RollingUpdate"
+    maxUnavailable: "25%"
+    maxSurge: "25%"
+    progressDeadlineSeconds: 600
+  
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  
+  environment:
+    name: "production"
+    variables:
+      LOG_LEVEL: "info"
+      DATABASE_POOL_SIZE: "20"
+      CACHE_TTL: "3600"
+      RATE_LIMIT: "1000"
+    configMaps:
+    - name: "ecommerce-config"
+      mountPath: "/etc/config"
+      readOnly: true
+    secrets:
+    - name: "ecommerce-secrets"
+      mountPath: "/etc/secrets"
+      readOnly: true
+  
+  service:
+    enabled: true
+    type: "ClusterIP"
+    ports:
+    - name: "http"
+      port: 80
+      targetPort: 8080
+      protocol: "TCP"
+    - name: "metrics"
+      port: 9090
+      targetPort: 9090
+      protocol: "TCP"
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+  
+  ingress:
+    enabled: true
+    className: "nginx"
+    hosts:
+    - host: "api.ecommerce.company.com"
+      paths:
+      - path: "/"
+        pathType: "Prefix"
+    - host: "api-internal.ecommerce.company.com"
+      paths:
+      - path: "/internal"
+        pathType: "Prefix"
+    tls:
+    - secretName: "ecommerce-tls"
+      hosts:
+      - "api.ecommerce.company.com"
+      - "api-internal.ecommerce.company.com"
+  
+  healthChecks:
+    livenessProbe:
+      enabled: true
+      path: "/health/live"
+      port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      enabled: true
+      path: "/health/ready"
+      port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 2
+  
+  monitoring:
+    metrics:
+      enabled: true
+      path: "/metrics"
+      port: 9090
+      serviceMonitor: true
+    logging:
+      level: "info"
+      format: "json"
+      output: "stdout"
+
+---
+# Database Schema for ecommerce
+apiVersion: data.company.com/v1
+kind: DatabaseSchema
+metadata:
+  name: ecommerce-db-schema
+  namespace: default
+  labels:
+    app: ecommerce-api
+    component: database
+spec:
+  database:
+    type: "postgresql"
+    host: "postgres.database.svc.cluster.local"
+    port: 5432
+    name: "ecommerce"
+    credentialsSecret: "postgres-credentials"
+  
+  schema:
+    version: "v2.1.0"
+    migrations:
+    - version: "v2.0.0"
+      name: "create-users-table"
+      sql: |
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          email VARCHAR(255) UNIQUE NOT NULL,
+          password_hash VARCHAR(255) NOT NULL,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+      rollback: "DROP TABLE IF EXISTS users;"
+    
+    - version: "v2.1.0"
+      name: "create-products-table"
+      sql: |
+        CREATE TABLE IF NOT EXISTS products (
+          id SERIAL PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          description TEXT,
+          price DECIMAL(10,2) NOT NULL,
+          inventory_count INTEGER DEFAULT 0,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+        
+        CREATE INDEX idx_products_price ON products(price);
+        CREATE INDEX idx_products_inventory ON products(inventory_count);
+      rollback: |
+        DROP INDEX IF EXISTS idx_products_inventory;
+        DROP INDEX IF EXISTS idx_products_price;
+        DROP TABLE IF EXISTS products;
+    
+    tables:
+    - name: "users"
+      columns:
+      - name: "id"
+        type: "SERIAL"
+        nullable: false
+        primaryKey: true
+      - name: "email"
+        type: "VARCHAR(255)"
+        nullable: false
+      - name: "password_hash"
+        type: "VARCHAR(255)"
+        nullable: false
+      indexes:
+      - name: "idx_users_email"
+        columns: ["email"]
+        unique: true
+    
+    - name: "products"
+      columns:
+      - name: "id"
+        type: "SERIAL"
+        nullable: false
+        primaryKey: true
+      - name: "name"
+        type: "VARCHAR(255)"
+        nullable: false
+      - name: "price"
+        type: "DECIMAL(10,2)"
+        nullable: false
+      indexes:
+      - name: "idx_products_price"
+        columns: ["price"]
+        unique: false
+  
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"  # Daily at 2 AM
+    retention: "30d"
+    storage:
+      type: "s3"
+      bucket: "company-database-backups"
+      path: "ecommerce/postgres"
+
+---
+# Critical Alert Rule
+apiVersion: monitoring.company.com/v1
+kind: AlertRule
+metadata:
+  name: ecommerce-api-high-error-rate
+  namespace: default
+  labels:
+    app: ecommerce-api
+    severity: critical
+spec:
+  rule:
+    name: "EcommerceAPIHighErrorRate"
+    severity: "critical"
+    summary: "Ecommerce API error rate is above 5%"
+    description: "The ecommerce API is experiencing a high error rate (>5%) which may impact customer experience"
+    runbook: "https://wiki.company.com/runbooks/ecommerce-api-errors"
+  
+  query:
+    expression: |
+      (
+        rate(http_requests_total{app="ecommerce-api", status=~"5.."}[5m]) /
+        rate(http_requests_total{app="ecommerce-api"}[5m])
+      ) * 100 > 5
+    duration: "5m"
+    labels:
+      team: "ecommerce"
+      service: "api"
+  
+  notifications:
+    channels:
+    - type: "slack"
+      config:
+        channel: "#ecommerce-alerts"
+        webhook: "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+    - type: "pagerduty"
+      config:
+        integration_key: "INTEGRATION_KEY_HERE"
+        severity: "critical"
+    throttle: "1h"
+  
+  schedule:
+    enabled: true
+    timezone: "UTC"
+    activeHours:
+      start: "08:00"
+      end: "22:00"
+    activeDays: ["monday", "tuesday", "wednesday", "thursday", "friday"]
+
+---
+# Warning Alert Rule
+apiVersion: monitoring.company.com/v1
+kind: AlertRule
+metadata:
+  name: ecommerce-api-high-latency
+  namespace: default
+  labels:
+    app: ecommerce-api
+    severity: warning
+spec:
+  rule:
+    name: "EcommerceAPIHighLatency"
+    severity: "warning"
+    summary: "Ecommerce API response latency is high"
+    description: "The ecommerce API response time is above 500ms which may degrade user experience"
+    runbook: "https://wiki.company.com/runbooks/ecommerce-api-latency"
+  
+  query:
+    expression: |
+      histogram_quantile(0.95, 
+        rate(http_request_duration_seconds_bucket{app="ecommerce-api"}[5m])
+      ) > 0.5
+    duration: "10m"
+    labels:
+      team: "ecommerce"
+      service: "api"
+  
+  notifications:
+    channels:
+    - type: "slack"
+      config:
+        channel: "#ecommerce-monitoring"
+        webhook: "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+    throttle: "2h"
+  
+  schedule:
+    enabled: true
+    timezone: "UTC"
+
+---
+# ====================================================================
+# TESTING AND USAGE COMMANDS
+# ====================================================================
+#
+# After applying these resources, test custom resources with:
+#
+# 1. CHECK CRD INSTALLATION:
+# kubectl get crd | grep company.com
+# kubectl describe crd webapplications.platform.company.com
+#
+# 2. WORK WITH CUSTOM RESOURCES:
+# kubectl get webapplications
+# kubectl get webapp ecommerce-api -o yaml
+# kubectl describe webapp ecommerce-api
+#
+# 3. USE SHORT NAMES:
+# kubectl get webapp
+# kubectl get dbschema
+# kubectl get alert
+#
+# 4. CHECK STATUS SUBRESOURCE:
+# kubectl get webapp ecommerce-api -o jsonpath='{.status}'
+#
+# 5. SCALE USING SCALE SUBRESOURCE:
+# kubectl scale webapp ecommerce-api --replicas=7
+#
+# 6. API DISCOVERY:
+# kubectl api-resources | grep company.com
+# kubectl api-versions | grep company.com
+#
+# 7. EXPLAIN CUSTOM RESOURCES:
+# kubectl explain webapplication
+# kubectl explain webapplication.spec.deployment
+# kubectl explain databaseschema.spec.schema
+#
+# 8. LIST ACROSS CATEGORIES:
+# kubectl get all,platform  # Shows all resources plus platform category
+#
+# ====================================================================

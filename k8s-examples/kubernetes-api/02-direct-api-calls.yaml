@@ -1,0 +1,603 @@
+# ====================================================================
+# DIRECT API CALLS: Raw HTTP Interaction with Kubernetes API
+# ====================================================================
+#
+# Pattern: Making direct HTTP calls to Kubernetes API without client libraries
+# Use Cases: Custom tooling, debugging, understanding API mechanics
+# Key Point: Understanding raw API structure and authentication methods
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# CURL-BASED API CLIENT - Direct HTTP calls using curl
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl-api-client
+  annotations:
+    team.company.com/owner: "platform-team"
+    api.company.com/purpose: "direct-http-api-calls"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: curl-api-client
+      component: http-tools
+  template:
+    metadata:
+      labels:
+        app: curl-api-client
+        component: http-tools
+    spec:
+      serviceAccountName: api-client  # Reuse from SIMPLE-KUBERNETES-API.yaml
+      
+      containers:
+      - name: curl-client
+        image: curlimages/curl:8.0.1
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          echo "=== Direct Kubernetes API Calls with curl ==="
+          
+          # Get service account token
+          TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+          API_SERVER="https://kubernetes.default.svc"
+          
+          echo "Using token: ${TOKEN:0:20}..."
+          echo "API Server: $API_SERVER"
+          
+          echo ""
+          echo "=== 1. API VERSION DISCOVERY ==="
+          
+          echo "Core API versions:"
+          curl -s -H "Authorization: Bearer $TOKEN" \
+               -H "Accept: application/json" \
+               "$API_SERVER/api" | \
+          jq -r '.versions[]' 2>/dev/null || echo "Raw response (jq not available)"
+          
+          echo ""
+          echo "Extension API groups:"
+          curl -s -H "Authorization: Bearer $TOKEN" \
+               -H "Accept: application/json" \
+               "$API_SERVER/apis" | \
+          jq -r '.groups[] | "\(.name) - \(.preferredVersion.version)"' 2>/dev/null || \
+          echo "Raw JSON response (install jq for formatting)"
+          
+          echo ""
+          echo "=== 2. CORE RESOURCE OPERATIONS ==="
+          
+          # List pods in default namespace
+          echo "GET /api/v1/namespaces/default/pods"
+          PODS_RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" \
+                               -H "Accept: application/json" \
+                               "$API_SERVER/api/v1/namespaces/default/pods")
+          
+          if echo "$PODS_RESPONSE" | grep -q '"kind":"PodList"'; then
+            echo "✓ Successfully retrieved pod list"
+            echo "$PODS_RESPONSE" | jq -r '.items[] | "Pod: \(.metadata.name) - Status: \(.status.phase // "Unknown")"' 2>/dev/null || \
+            echo "Pod list retrieved (jq not available for parsing)"
+          else
+            echo "✗ Failed to retrieve pods"
+            echo "Response: ${PODS_RESPONSE:0:200}..."
+          fi
+          
+          echo ""
+          echo "=== 3. CREATE RESOURCE VIA POST ==="
+          
+          # Create a simple pod via POST
+          echo "POST /api/v1/namespaces/default/pods"
+          
+          POD_MANIFEST=$(cat << 'EOF'
+          {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "name": "curl-test-pod",
+              "labels": {
+                "created-by": "curl-client",
+                "purpose": "api-test"
+              }
+            },
+            "spec": {
+              "restartPolicy": "Never",
+              "containers": [
+                {
+                  "name": "test-container",
+                  "image": "busybox:1.36",
+                  "command": ["sh", "-c", "echo 'Hello from curl-created pod!' && sleep 60"]
+                }
+              ]
+            }
+          }
+          EOF
+          )
+          
+          CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" \
+                                 -H "Authorization: Bearer $TOKEN" \
+                                 -H "Content-Type: application/json" \
+                                 -H "Accept: application/json" \
+                                 -X POST \
+                                 -d "$POD_MANIFEST" \
+                                 "$API_SERVER/api/v1/namespaces/default/pods")
+          
+          HTTP_CODE=$(echo "$CREATE_RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$CREATE_RESPONSE" | head -n -1)
+          
+          if [ "$HTTP_CODE" = "201" ]; then
+            echo "✓ Pod created successfully (HTTP $HTTP_CODE)"
+            echo "$RESPONSE_BODY" | jq -r '"Created pod: \(.metadata.name)"' 2>/dev/null || \
+            echo "Pod creation response received"
+          elif [ "$HTTP_CODE" = "409" ]; then
+            echo "⚠ Pod already exists (HTTP $HTTP_CODE)"
+          else
+            echo "✗ Failed to create pod (HTTP $HTTP_CODE)"
+            echo "Error: ${RESPONSE_BODY:0:200}..."
+          fi
+          
+          echo ""
+          echo "=== 4. PATCH RESOURCE ==="
+          
+          # Update pod labels using JSON Patch
+          echo "PATCH /api/v1/namespaces/default/pods/curl-test-pod"
+          
+          PATCH_DATA=$(cat << 'EOF'
+          {
+            "metadata": {
+              "labels": {
+                "created-by": "curl-client",
+                "purpose": "api-test",
+                "updated": "true",
+                "timestamp": "$(date +%s)"
+              }
+            }
+          }
+          EOF
+          )
+          
+          PATCH_RESPONSE=$(curl -s -w "\n%{http_code}" \
+                                -H "Authorization: Bearer $TOKEN" \
+                                -H "Content-Type: application/strategic-merge-patch+json" \
+                                -H "Accept: application/json" \
+                                -X PATCH \
+                                -d "$PATCH_DATA" \
+                                "$API_SERVER/api/v1/namespaces/default/pods/curl-test-pod")
+          
+          PATCH_HTTP_CODE=$(echo "$PATCH_RESPONSE" | tail -n1)
+          PATCH_BODY=$(echo "$PATCH_RESPONSE" | head -n -1)
+          
+          if [ "$PATCH_HTTP_CODE" = "200" ]; then
+            echo "✓ Pod updated successfully (HTTP $PATCH_HTTP_CODE)"
+          else
+            echo "⚠ Patch operation status: HTTP $PATCH_HTTP_CODE"
+          fi
+          
+          echo ""
+          echo "=== 5. WATCH API - Real-time events ==="
+          
+          echo "Starting watch on pods (30 seconds)..."
+          timeout 30s curl -s -H "Authorization: Bearer $TOKEN" \
+                               -H "Accept: application/json" \
+                               "$API_SERVER/api/v1/namespaces/default/pods?watch=true" | \
+          while read line; do
+            echo "Event: $line" | jq -r '"Type: \(.type), Pod: \(.object.metadata.name), Phase: \(.object.status.phase // "Unknown")"' 2>/dev/null || \
+            echo "Watch event: ${line:0:100}..."
+          done
+          
+          echo ""
+          echo "=== 6. EXTENSION API CALLS ==="
+          
+          # List deployments via apps/v1 API
+          echo "GET /apis/apps/v1/namespaces/default/deployments"
+          DEPLOYMENTS_RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" \
+                                      -H "Accept: application/json" \
+                                      "$API_SERVER/apis/apps/v1/namespaces/default/deployments")
+          
+          if echo "$DEPLOYMENTS_RESPONSE" | grep -q '"kind":"DeploymentList"'; then
+            echo "✓ Successfully retrieved deployment list"
+            DEPLOYMENT_COUNT=$(echo "$DEPLOYMENTS_RESPONSE" | jq '.items | length' 2>/dev/null || echo "N/A")
+            echo "Found $DEPLOYMENT_COUNT deployments"
+          else
+            echo "✗ Failed to retrieve deployments"
+          fi
+          
+          echo ""
+          echo "=== 7. CLEANUP ==="
+          
+          # Delete the test pod
+          echo "DELETE /api/v1/namespaces/default/pods/curl-test-pod"
+          DELETE_RESPONSE=$(curl -s -w "\n%{http_code}" \
+                                 -H "Authorization: Bearer $TOKEN" \
+                                 -H "Accept: application/json" \
+                                 -X DELETE \
+                                 "$API_SERVER/api/v1/namespaces/default/pods/curl-test-pod")
+          
+          DELETE_HTTP_CODE=$(echo "$DELETE_RESPONSE" | tail -n1)
+          
+          if [ "$DELETE_HTTP_CODE" = "200" ] || [ "$DELETE_HTTP_CODE" = "404" ]; then
+            echo "✓ Test pod cleanup completed (HTTP $DELETE_HTTP_CODE)"
+          else
+            echo "⚠ Cleanup status: HTTP $DELETE_HTTP_CODE"
+          fi
+          
+          echo ""
+          echo "=== API CALL EXAMPLES COMPLETE ==="
+          echo "This demonstrates:"
+          echo "- Direct HTTP API calls without client libraries"
+          echo "- Authentication using service account tokens"
+          echo "- CRUD operations: GET, POST, PATCH, DELETE"
+          echo "- Watch API for real-time events"
+          echo "- Both core and extension API groups"
+          echo "- Proper error handling and HTTP status codes"
+          
+          # Keep container running for manual testing
+          echo ""
+          echo "Container staying alive for manual API testing..."
+          while true; do
+            sleep 60
+            echo "[$(date)] curl API client running - ready for manual testing"
+          done
+        
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+        
+        env:
+        - name: TERM
+          value: "xterm"
+
+---
+# --------------------------------------------------------------------
+# PYTHON REQUESTS CLIENT - Direct HTTP calls using Python requests
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-requests-client
+  annotations:
+    team.company.com/owner: "platform-team"
+    api.company.com/purpose: "python-http-api-calls" 
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: python-requests-client
+      component: http-client
+  template:
+    metadata:
+      labels:
+        app: python-requests-client
+        component: http-client
+    spec:
+      serviceAccountName: api-client
+      
+      containers:
+      - name: python-client
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          print("=== Python requests Kubernetes API Client ===")
+          
+          # Install required packages
+          import subprocess
+          subprocess.run(["pip", "install", "requests", "urllib3"], check=True)
+          
+          import requests
+          import json
+          import time
+          import urllib3
+          from datetime import datetime
+          
+          # Disable SSL warnings for demo
+          urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+          
+          # Get service account token
+          with open('/var/run/secrets/kubernetes.io/serviceaccount/token', 'r') as f:
+              token = f.read()
+          
+          api_server = "https://kubernetes.default.svc"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/json",
+              "Content-Type": "application/json"
+          }
+          
+          print(f"API Server: {api_server}")
+          print(f"Token: {token[:20]}...")
+          
+          def make_request(method, url, data=None, timeout=10):
+              """Make HTTP request with error handling"""
+              try:
+                  response = requests.request(
+                      method=method,
+                      url=f"{api_server}{url}",
+                      headers=headers,
+                      json=data,
+                      verify=False,
+                      timeout=timeout
+                  )
+                  return response
+              except requests.exceptions.RequestException as e:
+                  print(f"Request failed: {e}")
+                  return None
+          
+          print("\n=== 1. API CAPABILITIES DISCOVERY ===")
+          
+          # Discover API versions
+          response = make_request("GET", "/api")
+          if response and response.status_code == 200:
+              core_api = response.json()
+              print("Core API versions:", core_api.get('versions', []))
+          
+          # Discover API groups
+          response = make_request("GET", "/apis")
+          if response and response.status_code == 200:
+              apis = response.json()
+              print(f"Found {len(apis.get('groups', []))} API groups:")
+              for group in apis.get('groups', [])[:5]:  # First 5 groups
+                  name = group['name']
+                  version = group['preferredVersion']['version']
+                  print(f"  - {name}: {version}")
+          
+          print("\n=== 2. RESOURCE DISCOVERY ===")
+          
+          # Get core API resources
+          response = make_request("GET", "/api/v1")
+          if response and response.status_code == 200:
+              api_resources = response.json()
+              resources = api_resources.get('resources', [])
+              print(f"Core v1 API resources: {len(resources)}")
+              
+              # Show first few resources
+              for resource in resources[:10]:
+                  if '/' not in resource['name']:  # Skip subresources
+                      name = resource['name']
+                      kind = resource['kind']
+                      namespaced = "✓" if resource.get('namespaced', False) else "✗"
+                      print(f"  - {name} ({kind}) - Namespaced: {namespaced}")
+          
+          print("\n=== 3. ADVANCED CRUD OPERATIONS ===")
+          
+          # Create a ConfigMap
+          configmap_data = {
+              "apiVersion": "v1",
+              "kind": "ConfigMap",
+              "metadata": {
+                  "name": "python-api-test",
+                  "labels": {
+                      "created-by": "python-requests",
+                      "purpose": "api-testing"
+                  }
+              },
+              "data": {
+                  "config.json": json.dumps({
+                      "app_name": "python-api-test",
+                      "version": "1.0.0",
+                      "created": datetime.now().isoformat()
+                  }),
+                  "message": "Hello from Python requests API client!"
+              }
+          }
+          
+          print("Creating ConfigMap...")
+          response = make_request("POST", "/api/v1/namespaces/default/configmaps", configmap_data)
+          if response:
+              if response.status_code == 201:
+                  print("✓ ConfigMap created successfully")
+                  created_cm = response.json()
+                  print(f"  Name: {created_cm['metadata']['name']}")
+                  print(f"  UID: {created_cm['metadata']['uid']}")
+              elif response.status_code == 409:
+                  print("⚠ ConfigMap already exists")
+              else:
+                  print(f"✗ Failed to create ConfigMap (HTTP {response.status_code})")
+                  print(f"Error: {response.text[:200]}...")
+          
+          print("\n=== 4. READ AND UPDATE OPERATIONS ===")
+          
+          # Read the ConfigMap
+          print("Reading ConfigMap...")
+          response = make_request("GET", "/api/v1/namespaces/default/configmaps/python-api-test")
+          if response and response.status_code == 200:
+              cm = response.json()
+              print("✓ ConfigMap retrieved")
+              print(f"  Resource version: {cm['metadata'].get('resourceVersion')}")
+              print(f"  Data keys: {list(cm.get('data', {}).keys())}")
+              
+              # Update with strategic merge patch
+              print("\nUpdating ConfigMap with strategic merge patch...")
+              patch_data = {
+                  "data": {
+                      "updated": "true",
+                      "last_update": datetime.now().isoformat(),
+                      "update_method": "strategic-merge-patch"
+                  }
+              }
+              
+              patch_headers = headers.copy()
+              patch_headers["Content-Type"] = "application/strategic-merge-patch+json"
+              
+              response = requests.patch(
+                  f"{api_server}/api/v1/namespaces/default/configmaps/python-api-test",
+                  headers=patch_headers,
+                  json=patch_data,
+                  verify=False
+              )
+              
+              if response.status_code == 200:
+                  print("✓ ConfigMap updated successfully")
+                  updated_cm = response.json()
+                  print(f"  New resource version: {updated_cm['metadata'].get('resourceVersion')}")
+              else:
+                  print(f"✗ Update failed (HTTP {response.status_code})")
+          
+          print("\n=== 5. JSON PATCH OPERATIONS ===")
+          
+          # JSON Patch example
+          json_patch = [
+              {
+                  "op": "add",
+                  "path": "/data/json-patch-test",
+                  "value": "Added via JSON Patch"
+              },
+              {
+                  "op": "replace",
+                  "path": "/metadata/labels/updated-by",
+                  "value": "json-patch"
+              }
+          ]
+          
+          print("Applying JSON Patch...")
+          patch_headers = headers.copy()
+          patch_headers["Content-Type"] = "application/json-patch+json"
+          
+          response = requests.patch(
+              f"{api_server}/api/v1/namespaces/default/configmaps/python-api-test",
+              headers=patch_headers,
+              json=json_patch,
+              verify=False
+          )
+          
+          if response.status_code == 200:
+              print("✓ JSON Patch applied successfully")
+          else:
+              print(f"✗ JSON Patch failed (HTTP {response.status_code})")
+              print(f"Error: {response.text[:200]}...")
+          
+          print("\n=== 6. LIST WITH FIELD SELECTORS ===")
+          
+          # List with field selector
+          print("Listing pods with field selector...")
+          response = make_request("GET", "/api/v1/namespaces/default/pods?fieldSelector=status.phase=Running")
+          if response and response.status_code == 200:
+              pods = response.json()
+              running_pods = pods.get('items', [])
+              print(f"Found {len(running_pods)} running pods:")
+              for pod in running_pods[:5]:  # First 5
+                  name = pod['metadata']['name']
+                  phase = pod['status'].get('phase', 'Unknown')
+                  print(f"  - {name}: {phase}")
+          
+          # List with label selector
+          print("\nListing pods with label selector...")
+          response = make_request("GET", "/api/v1/namespaces/default/pods?labelSelector=app=python-requests-client")
+          if response and response.status_code == 200:
+              pods = response.json()
+              matching_pods = pods.get('items', [])
+              print(f"Found {len(matching_pods)} pods matching label selector")
+          
+          print("\n=== 7. WATCH API EXAMPLE ===")
+          
+          print("Starting watch on ConfigMaps (30 seconds)...")
+          try:
+              response = requests.get(
+                  f"{api_server}/api/v1/namespaces/default/configmaps",
+                  headers=headers,
+                  params={"watch": "true", "timeoutSeconds": "30"},
+                  verify=False,
+                  stream=True,
+                  timeout=35
+              )
+              
+              if response.status_code == 200:
+                  for line in response.iter_lines():
+                      if line:
+                          try:
+                              event = json.loads(line)
+                              event_type = event.get('type')
+                              obj = event.get('object', {})
+                              name = obj.get('metadata', {}).get('name', 'unknown')
+                              print(f"Watch event: {event_type} - {name}")
+                          except json.JSONDecodeError:
+                              print(f"Invalid JSON in watch stream: {line[:100]}")
+                      else:
+                          break
+              else:
+                  print(f"Watch failed (HTTP {response.status_code})")
+                  
+          except requests.exceptions.Timeout:
+              print("Watch timeout completed")
+          except Exception as e:
+              print(f"Watch error: {e}")
+          
+          print("\n=== 8. CLEANUP ===")
+          
+          # Delete the ConfigMap
+          print("Deleting test ConfigMap...")
+          response = make_request("DELETE", "/api/v1/namespaces/default/configmaps/python-api-test")
+          if response:
+              if response.status_code in [200, 404]:
+                  print("✓ ConfigMap cleanup completed")
+              else:
+                  print(f"⚠ Cleanup status: HTTP {response.status_code}")
+          
+          print("\n=== PYTHON REQUESTS API CLIENT COMPLETE ===")
+          print("This demonstrates:")
+          print("- HTTP requests using Python requests library")
+          print("- Strategic merge patch and JSON patch operations")
+          print("- Field selectors and label selectors")
+          print("- Streaming watch API")
+          print("- Comprehensive error handling")
+          print("- Resource versioning and updates")
+          
+          # Keep container running
+          print("\nContainer staying alive for manual testing...")
+          while True:
+              time.sleep(60)
+              print(f"[{datetime.now()}] Python requests client running...")
+        
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+---
+# ====================================================================
+# USAGE EXAMPLES AND COMMANDS
+# ====================================================================
+#
+# After applying this file, test direct API calls with:
+#
+# 1. WATCH CURL CLIENT EXECUTION:
+# kubectl logs -f deployment/curl-api-client
+#
+# 2. WATCH PYTHON CLIENT EXECUTION:
+# kubectl logs -f deployment/python-requests-client
+#
+# 3. MANUAL CURL TESTING:
+# kubectl exec -it deployment/curl-api-client -- sh
+# # Inside container:
+# TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+# curl -H "Authorization: Bearer $TOKEN" \
+#      https://kubernetes.default.svc/api/v1/namespaces/default/pods
+#
+# 4. PYTHON TESTING:
+# kubectl exec -it deployment/python-requests-client -- python3
+# # Inside Python:
+# import requests
+# with open('/var/run/secrets/kubernetes.io/serviceaccount/token') as f:
+#     token = f.read()
+# headers = {"Authorization": f"Bearer {token}"}
+# response = requests.get("https://kubernetes.default.svc/api/v1", 
+#                        headers=headers, verify=False)
+# print(response.json())
+#
+# 5. COMPARE CLIENT APPROACHES:
+# # See differences between curl, Python requests, and Python client library
+# kubectl logs deployment/curl-api-client | grep "✓"
+# kubectl logs deployment/python-requests-client | grep "✓"
+# kubectl logs deployment/api-client-pod | grep "successfully"
+#
+# ====================================================================

@@ -1,0 +1,567 @@
+# ====================================================================
+# API DISCOVERY: Exploring the Kubernetes API Surface
+# ====================================================================
+#
+# Pattern: Programmatic discovery of available APIs and resources
+# Use Cases: Dynamic tooling, API compatibility checks, resource validation
+# Key Point: Understanding what APIs are available and how to explore them
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# API DISCOVERY POD - Comprehensive API exploration
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-discovery-tool
+  annotations:
+    team.company.com/owner: "platform-team"
+    tool.company.com/purpose: "api-exploration"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-discovery
+      component: explorer
+  template:
+    metadata:
+      labels:
+        app: api-discovery
+        component: explorer
+    spec:
+      serviceAccountName: api-client  # Reuse from SIMPLE-KUBERNETES-API.yaml
+      
+      containers:
+      - name: api-explorer
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          print("=== Kubernetes API Discovery Tool ===")
+          
+          # Install required packages
+          import subprocess
+          subprocess.run(["pip", "install", "kubernetes", "requests", "tabulate"], check=True)
+          
+          import json
+          import requests
+          from kubernetes import client, config
+          from tabulate import tabulate
+          import time
+          
+          # Load configuration
+          config.load_incluster_config()
+          
+          # Get service account token
+          with open('/var/run/secrets/kubernetes.io/serviceaccount/token', 'r') as f:
+            token = f.read()
+          
+          api_server = "https://kubernetes.default.svc"
+          headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json"
+          }
+          
+          print("\n=== 1. API VERSION DISCOVERY ===")
+          
+          def discover_api_versions():
+            """Discover all available API versions"""
+            try:
+              # Core API
+              response = requests.get(f"{api_server}/api", headers=headers, verify=False)
+              if response.status_code == 200:
+                core_api = response.json()
+                print("Core API versions:")
+                for version in core_api.get('versions', []):
+                  print(f"  - /api/{version}")
+              
+              # Extension APIs
+              response = requests.get(f"{api_server}/apis", headers=headers, verify=False)
+              if response.status_code == 200:
+                apis = response.json()
+                print(f"\nExtension API groups ({len(apis.get('groups', []))}):")
+                
+                api_table = []
+                for group in apis.get('groups', []):
+                  group_name = group['name']
+                  preferred = group['preferredVersion']['version']
+                  all_versions = [v['version'] for v in group.get('versions', [])]
+                  
+                  api_table.append([
+                    group_name,
+                    preferred,
+                    ', '.join(all_versions)
+                  ])
+                
+                print(tabulate(api_table, 
+                             headers=['Group', 'Preferred', 'All Versions'], 
+                             tablefmt='grid'))
+                
+            except Exception as e:
+              print(f"Error discovering API versions: {e}")
+          
+          discover_api_versions()
+          
+          print("\n=== 2. CORE API RESOURCES ===")
+          
+          def discover_core_resources():
+            """Discover core API resources"""
+            try:
+              v1 = client.CoreV1Api()
+              api_resources = v1.get_api_resources()
+              
+              resource_table = []
+              for resource in api_resources.resources:
+                # Skip subresources for main table
+                if '/' not in resource.name:
+                  namespaced = "Yes" if resource.namespaced else "No"
+                  verbs = ', '.join(resource.verbs[:3]) + ('...' if len(resource.verbs) > 3 else '')
+                  
+                  resource_table.append([
+                    resource.name,
+                    resource.kind,
+                    namespaced,
+                    verbs
+                  ])
+              
+              # Sort by resource name
+              resource_table.sort(key=lambda x: x[0])
+              
+              print(f"Core API resources ({len(resource_table)}):")
+              print(tabulate(resource_table[:20],  # First 20 resources
+                           headers=['Resource', 'Kind', 'Namespaced', 'Verbs'], 
+                           tablefmt='grid'))
+              
+              if len(resource_table) > 20:
+                print(f"... and {len(resource_table) - 20} more resources")
+                
+            except Exception as e:
+              print(f"Error discovering core resources: {e}")
+          
+          discover_core_resources()
+          
+          print("\n=== 3. EXTENSION API RESOURCES ===")
+          
+          def discover_extension_resources():
+            """Discover extension API resources"""
+            try:
+              # Get all API groups
+              response = requests.get(f"{api_server}/apis", headers=headers, verify=False)
+              if response.status_code != 200:
+                print("Cannot access extension APIs")
+                return
+              
+              apis = response.json()
+              
+              for group in apis.get('groups', [])[:10]:  # First 10 groups
+                group_name = group['name']
+                preferred_version = group['preferredVersion']['version']
+                
+                print(f"\n--- {group_name} API Group ---")
+                
+                # Get resources for this group
+                api_path = f"/apis/{group_name}/{preferred_version}"
+                response = requests.get(f"{api_server}{api_path}", headers=headers, verify=False)
+                
+                if response.status_code == 200:
+                  group_resources = response.json()
+                  
+                  resource_table = []
+                  for resource in group_resources.get('resources', []):
+                    if '/' not in resource['name']:  # Skip subresources
+                      namespaced = "Yes" if resource.get('namespaced', False) else "No"
+                      verbs = ', '.join(resource.get('verbs', [])[:3])
+                      
+                      resource_table.append([
+                        resource['name'],
+                        resource['kind'],
+                        namespaced,
+                        verbs
+                      ])
+                  
+                  if resource_table:
+                    print(tabulate(resource_table,
+                                 headers=['Resource', 'Kind', 'Namespaced', 'Verbs'],
+                                 tablefmt='simple'))
+                  else:
+                    print("  No resources found")
+                else:
+                  print(f"  Cannot access resources (status: {response.status_code})")
+                  
+            except Exception as e:
+              print(f"Error discovering extension resources: {e}")
+          
+          discover_extension_resources()
+          
+          print("\n=== 4. CUSTOM RESOURCE DEFINITIONS ===")
+          
+          def discover_crds():
+            """Discover Custom Resource Definitions"""
+            try:
+              apiextensions_v1 = client.ApiextensionsV1Api()
+              crds = apiextensions_v1.list_custom_resource_definition()
+              
+              if crds.items:
+                print(f"Found {len(crds.items)} Custom Resource Definitions:")
+                
+                crd_table = []
+                for crd in crds.items:
+                  group = crd.spec.group
+                  plural = crd.spec.names.plural
+                  kind = crd.spec.names.kind
+                  scope = crd.spec.scope
+                  versions = ', '.join([v.name for v in crd.spec.versions if v.served])
+                  
+                  crd_table.append([
+                    f"{group}/{plural}",
+                    kind,
+                    scope,
+                    versions
+                  ])
+                
+                print(tabulate(crd_table,
+                             headers=['API/Resource', 'Kind', 'Scope', 'Versions'],
+                             tablefmt='grid'))
+              else:
+                print("No Custom Resource Definitions found")
+                
+            except Exception as e:
+              print(f"Error discovering CRDs: {e}")
+          
+          discover_crds()
+          
+          print("\n=== 5. SERVER VERSION AND CAPABILITIES ===")
+          
+          def discover_server_info():
+            """Discover server version and capabilities"""
+            try:
+              # Server version
+              response = requests.get(f"{api_server}/version", headers=headers, verify=False)
+              if response.status_code == 200:
+                version_info = response.json()
+                print("Server Version:")
+                print(f"  Kubernetes: {version_info.get('gitVersion', 'Unknown')}")
+                print(f"  Go Version: {version_info.get('goVersion', 'Unknown')}")
+                print(f"  Platform: {version_info.get('platform', 'Unknown')}")
+              
+              # Health endpoints
+              print("\nHealth Endpoints:")
+              health_endpoints = ['/healthz', '/readyz', '/livez']
+              for endpoint in health_endpoints:
+                response = requests.get(f"{api_server}{endpoint}", headers=headers, verify=False)
+                status = "OK" if response.status_code == 200 else f"Error ({response.status_code})"
+                print(f"  {endpoint}: {status}")
+              
+              # OpenAPI schema availability
+              print("\nOpenAPI Schema:")
+              response = requests.get(f"{api_server}/openapi/v2", headers=headers, verify=False)
+              if response.status_code == 200:
+                print("  OpenAPI v2: Available")
+              else:
+                print("  OpenAPI v2: Not available")
+              
+              response = requests.get(f"{api_server}/openapi/v3", headers=headers, verify=False)
+              if response.status_code == 200:
+                print("  OpenAPI v3: Available")
+              else:
+                print("  OpenAPI v3: Not available")
+                
+            except Exception as e:
+              print(f"Error getting server info: {e}")
+          
+          discover_server_info()
+          
+          print("\n=== 6. RESOURCE SCHEMA EXPLORATION ===")
+          
+          def explore_resource_schema():
+            """Explore resource schemas using explain"""
+            try:
+              print("Exploring Pod resource schema:")
+              
+              # Get OpenAPI schema for Pod
+              response = requests.get(f"{api_server}/openapi/v2", headers=headers, verify=False)
+              if response.status_code == 200:
+                schema = response.json()
+                
+                # Find Pod definition
+                pod_def = schema.get('definitions', {}).get('io.k8s.api.core.v1.Pod', {})
+                if pod_def:
+                  properties = pod_def.get('properties', {})
+                  required = pod_def.get('required', [])
+                  
+                  print("Pod top-level properties:")
+                  for prop_name in sorted(properties.keys())[:10]:  # First 10
+                    prop_info = properties[prop_name]
+                    prop_type = prop_info.get('type', 'object')
+                    is_required = "Required" if prop_name in required else "Optional"
+                    description = prop_info.get('description', '')[:50] + '...' if len(prop_info.get('description', '')) > 50 else prop_info.get('description', '')
+                    
+                    print(f"  {prop_name}: {prop_type} ({is_required})")
+                    if description:
+                      print(f"    {description}")
+                else:
+                  print("  Pod schema not found in OpenAPI")
+              else:
+                print("  Cannot access OpenAPI schema")
+                
+            except Exception as e:
+              print(f"Error exploring schemas: {e}")
+          
+          explore_resource_schema()
+          
+          print("\n=== 7. CLUSTER RESOURCES SUMMARY ===")
+          
+          def cluster_summary():
+            """Get high-level cluster summary"""
+            try:
+              summary = {
+                "nodes": 0,
+                "namespaces": 0,
+                "pods": 0,
+                "services": 0,
+                "deployments": 0,
+                "configmaps": 0,
+                "secrets": 0
+              }
+              
+              v1 = client.CoreV1Api()
+              apps_v1 = client.AppsV1Api()
+              
+              # Try to get cluster-wide counts (may fail with permissions)
+              try:
+                nodes = v1.list_node()
+                summary["nodes"] = len(nodes.items)
+              except:
+                summary["nodes"] = "No permission"
+              
+              try:
+                namespaces = v1.list_namespace()
+                summary["namespaces"] = len(namespaces.items)
+              except:
+                summary["namespaces"] = "No permission"
+              
+              # Default namespace counts
+              try:
+                pods = v1.list_namespaced_pod(namespace="default")
+                summary["pods"] = len(pods.items)
+                
+                services = v1.list_namespaced_service(namespace="default")
+                summary["services"] = len(services.items)
+                
+                deployments = apps_v1.list_namespaced_deployment(namespace="default")
+                summary["deployments"] = len(deployments.items)
+                
+                configmaps = v1.list_namespaced_config_map(namespace="default")
+                summary["configmaps"] = len(configmaps.items)
+                
+                secrets = v1.list_namespaced_secret(namespace="default")
+                summary["secrets"] = len(secrets.items)
+              except Exception as e:
+                print(f"Error getting default namespace counts: {e}")
+              
+              print("Cluster Resource Summary:")
+              print(f"  Nodes: {summary['nodes']}")
+              print(f"  Namespaces: {summary['namespaces']}")
+              print(f"  Pods (default ns): {summary['pods']}")
+              print(f"  Services (default ns): {summary['services']}")
+              print(f"  Deployments (default ns): {summary['deployments']}")
+              print(f"  ConfigMaps (default ns): {summary['configmaps']}")
+              print(f"  Secrets (default ns): {summary['secrets']}")
+              
+            except Exception as e:
+              print(f"Error getting cluster summary: {e}")
+          
+          cluster_summary()
+          
+          print("\n=== API Discovery Complete ===")
+          print("This tool demonstrates:")
+          print("- Discovering available API groups and versions")
+          print("- Exploring core and extension API resources")
+          print("- Finding Custom Resource Definitions")
+          print("- Checking server capabilities and health")
+          print("- Exploring resource schemas")
+          print("- Getting cluster resource summaries")
+          
+          # Keep container running for manual exploration
+          print(f"\nContainer will stay running for manual exploration...")
+          while True:
+            time.sleep(60)
+            print(f"[{time.ctime()}] API Discovery tool is running...")
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+---
+# --------------------------------------------------------------------
+# API EXPLORATION JOB - One-time comprehensive discovery
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-exploration-job
+  annotations:
+    team.company.com/owner: "platform-team"
+    job.company.com/purpose: "one-time-api-discovery"
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600  # 10 minutes
+  ttlSecondsAfterFinished: 3600  # Clean up after 1 hour
+  
+  template:
+    metadata:
+      labels:
+        job: api-exploration  
+        component: discovery
+    spec:
+      restartPolicy: Never
+      serviceAccountName: api-client
+      
+      containers:
+      - name: api-explorer
+        image: curlimages/curl:8.0.1
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "=== Kubernetes API Exploration (curl-based) ==="
+          
+          # Get service account token
+          TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+          API_SERVER="https://kubernetes.default.svc"
+          
+          echo "Using token: ${TOKEN:0:20}..."
+          echo "API Server: $API_SERVER"
+          
+          echo "\n=== 1. API Version Discovery ==="
+          
+          echo "Core API:"
+          curl -s -H "Authorization: Bearer $TOKEN" \
+               -H "Accept: application/json" \
+               "$API_SERVER/api" | \
+          jq -r '.versions[]' 2>/dev/null || echo "  (jq not available, showing raw)"
+          
+          echo "\nExtension APIs:"
+          curl -s -H "Authorization: Bearer $TOKEN" \
+               -H "Accept: application/json" \
+               "$API_SERVER/apis" | \
+          jq -r '.groups[] | "\(.name) - \(.preferredVersion.version)"' 2>/dev/null || \
+          echo "  (raw JSON output - install jq for formatted display)"
+          
+          echo "\n=== 2. Health Endpoints ==="
+          
+          for endpoint in healthz readyz livez; do
+            echo "Checking /$endpoint:"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                          -H "Authorization: Bearer $TOKEN" \
+                          "$API_SERVER/$endpoint")
+            echo "  Status: $STATUS"
+          done
+          
+          echo "\n=== 3. Core Resources ==="
+          
+          echo "Listing core API resources:"
+          curl -s -H "Authorization: Bearer $TOKEN" \
+               -H "Accept: application/json" \
+               "$API_SERVER/api/v1" | \
+          jq -r '.resources[]? | select(.name | contains("/") | not) | "\(.name) (\(.kind))"' 2>/dev/null || \
+          echo "  (showing first few lines of raw output)"
+          
+          echo "\n=== 4. Sample Resource Queries ==="
+          
+          echo "Pods in default namespace:"
+          PODS=$(curl -s -H "Authorization: Bearer $TOKEN" \
+                      -H "Accept: application/json" \
+                      "$API_SERVER/api/v1/namespaces/default/pods")
+          
+          if echo "$PODS" | grep -q '"kind":"PodList"'; then
+            echo "$PODS" | jq -r '.items[]? | "\(.metadata.name) - \(.status.phase // "Unknown")"' 2>/dev/null || \
+            echo "  Found pod data (jq not available for formatting)"
+          else
+            echo "  No pods found or access denied"
+          fi
+          
+          echo "\nServices in default namespace:"
+          SERVICES=$(curl -s -H "Authorization: Bearer $TOKEN" \
+                          -H "Accept: application/json" \
+                          "$API_SERVER/api/v1/namespaces/default/services")
+          
+          if echo "$SERVICES" | grep -q '"kind":"ServiceList"'; then
+            echo "$SERVICES" | jq -r '.items[]? | "\(.metadata.name) - \(.spec.type // "Unknown")"' 2>/dev/null || \
+            echo "  Found service data (jq not available for formatting)"
+          else
+            echo "  No services found or access denied"
+          fi
+          
+          echo "\n=== 5. Custom Resources ==="
+          
+          echo "Custom Resource Definitions:"
+          CRDS=$(curl -s -H "Authorization: Bearer $TOKEN" \
+                      -H "Accept: application/json" \
+                      "$API_SERVER/apis/apiextensions.k8s.io/v1/customresourcedefinitions")
+          
+          if echo "$CRDS" | grep -q '"kind":"CustomResourceDefinitionList"'; then
+            echo "$CRDS" | jq -r '.items[]? | "\(.spec.group)/\(.spec.names.plural) (\(.spec.names.kind))"' 2>/dev/null || \
+            echo "  Found CRD data (jq not available for formatting)"
+          else
+            echo "  No CRDs found or access denied"
+          fi
+          
+          echo "\n=== API Exploration Complete ==="
+          echo "This job demonstrates curl-based API interaction without client libraries"
+        
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+
+---
+# ====================================================================
+# USAGE EXAMPLES AND COMMANDS
+# ====================================================================
+#
+# After applying this file, test API discovery with:
+#
+# 1. WATCH THE DISCOVERY TOOL:
+# kubectl logs -f deployment/api-discovery-tool
+#
+# 2. RUN ONE-TIME EXPLORATION JOB:
+# kubectl logs job/api-exploration-job
+#
+# 3. MANUAL API EXPLORATION:
+# kubectl exec -it deployment/api-discovery-tool -- python3 -c "
+#   from kubernetes import client, config
+#   config.load_incluster_config()
+#   v1 = client.CoreV1Api()
+#   print('Available methods:', [m for m in dir(v1) if not m.startswith('_')])
+# "
+#
+# 4. CURL-BASED EXPLORATION:
+# kubectl exec -it deployment/api-discovery-tool -- sh -c '
+#   TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+#   curl -H "Authorization: Bearer \$TOKEN" \\
+#        https://kubernetes.default.svc/api/v1 | head -50
+# '
+#
+# 5. EXPLORE SPECIFIC API GROUPS:
+# kubectl proxy --port=8080 &
+# curl http://localhost:8080/apis/apps/v1
+# curl http://localhost:8080/apis/batch/v1
+# curl http://localhost:8080/apis/networking.k8s.io/v1
+#
+# 6. CHECK CUSTOM RESOURCES:
+# curl http://localhost:8080/apis/demo.company.com/v1
+# curl http://localhost:8080/apis/demo.company.com/v1/namespaces/default/webapps
+#
+# ====================================================================
