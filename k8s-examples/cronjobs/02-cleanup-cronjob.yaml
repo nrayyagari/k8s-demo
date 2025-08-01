@@ -1,0 +1,930 @@
+# ====================================================================
+# CLEANUP CRONJOBS - Automated maintenance and housekeeping
+# ====================================================================
+#
+# Pattern: Scheduled cleanup operations to maintain system health
+# Use Cases: Log rotation, temp file cleanup, cache clearing, data archival
+# Key Point: Regular maintenance prevents disk full and performance issues
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# LOG ROTATION AND CLEANUP - Comprehensive log management
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: log-rotation-cleanup
+  annotations:
+    team.company.com/owner: "platform-team"
+    cleanup.company.com/type: "log-rotation"
+    cleanup.company.com/target: "application-logs"
+spec:
+  # Daily at 3:00 AM UTC (low traffic time)
+  schedule: "0 3 * * *"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600  # 1 hour timeout
+      
+      template:
+        metadata:
+          labels:
+            cleanup-type: log-rotation
+            schedule: daily
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: log-cleanup
+            image: busybox:1.36
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              echo "========================================"
+              echo "Log Rotation and Cleanup"
+              echo "Started: $(date)"
+              echo "========================================"
+              
+              # Configuration
+              LOG_RETENTION_DAYS=30
+              COMPRESSED_LOG_RETENTION_DAYS=90
+              TEMP_LOG_RETENTION_DAYS=7
+              
+              echo "Retention policies:"
+              echo "  Active logs: $LOG_RETENTION_DAYS days"
+              echo "  Compressed logs: $COMPRESSED_LOG_RETENTION_DAYS days"
+              echo "  Temp logs: $TEMP_LOG_RETENTION_DAYS days"
+              
+              # Check disk usage before cleanup
+              echo ""
+              echo "Disk usage BEFORE cleanup:"
+              df -h | grep -E "(Filesystem|/var/log|/tmp)"
+              
+              TOTAL_FREED=0
+              
+              # Process each log directory
+              LOG_DIRS="/var/log/applications /var/log/nginx /var/log/pods /var/log/containers"
+              
+              for LOG_DIR in $LOG_DIRS; do
+                if [ -d "$LOG_DIR" ]; then
+                  echo ""
+                  echo "Processing: $LOG_DIR"
+                  
+                  # Count files before cleanup
+                  BEFORE_COUNT=$(find "$LOG_DIR" -type f 2>/dev/null | wc -l)
+                  BEFORE_SIZE=$(du -sk "$LOG_DIR" 2>/dev/null | cut -f1)
+                  
+                  echo "  Files before: $BEFORE_COUNT"
+                  echo "  Size before: ${BEFORE_SIZE}K"
+                  
+                  # Remove old active log files
+                  echo "  Removing logs older than $LOG_RETENTION_DAYS days..."
+                  REMOVED_LOGS=$(find "$LOG_DIR" -name "*.log" -type f -mtime +$LOG_RETENTION_DAYS -print | wc -l)
+                  find "$LOG_DIR" -name "*.log" -type f -mtime +$LOG_RETENTION_DAYS -delete 2>/dev/null || true
+                  
+                  # Compress recent log files (1-7 days old)
+                  echo "  Compressing logs 1-7 days old..."
+                  find "$LOG_DIR" -name "*.log" -type f -mtime +1 -mtime -7 -exec gzip {} \; 2>/dev/null || true
+                  
+                  # Remove old compressed logs
+                  echo "  Removing compressed logs older than $COMPRESSED_LOG_RETENTION_DAYS days..."
+                  REMOVED_COMPRESSED=$(find "$LOG_DIR" -name "*.log.gz" -type f -mtime +$COMPRESSED_LOG_RETENTION_DAYS -print | wc -l)
+                  find "$LOG_DIR" -name "*.log.gz" -type f -mtime +$COMPRESSED_LOG_RETENTION_DAYS -delete 2>/dev/null || true
+                  
+                  # Remove empty directories
+                  find "$LOG_DIR" -type d -empty -delete 2>/dev/null || true
+                  
+                  # Count files after cleanup
+                  AFTER_COUNT=$(find "$LOG_DIR" -type f 2>/dev/null | wc -l)
+                  AFTER_SIZE=$(du -sk "$LOG_DIR" 2>/dev/null | cut -f1)
+                  FREED_SIZE=$((BEFORE_SIZE - AFTER_SIZE))
+                  TOTAL_FREED=$((TOTAL_FREED + FREED_SIZE))
+                  
+                  echo "  Files after: $AFTER_COUNT"
+                  echo "  Size after: ${AFTER_SIZE}K"
+                  echo "  Files removed: $((REMOVED_LOGS + REMOVED_COMPRESSED))"  
+                  echo "  Space freed: ${FREED_SIZE}K"
+                  
+                else
+                  echo "Directory not found: $LOG_DIR"
+                fi
+              done
+              
+              # Clean up temporary log files
+              echo ""
+              echo "Cleaning temporary log files..."
+              if [ -d "/tmp" ]; then
+                TEMP_REMOVED=$(find /tmp -name "*.log*" -type f -mtime +$TEMP_LOG_RETENTION_DAYS -print | wc -l)
+                find /tmp -name "*.log*" -type f -mtime +$TEMP_LOG_RETENTION_DAYS -delete 2>/dev/null || true
+                echo "  Temporary log files removed: $TEMP_REMOVED"
+              fi
+              
+              # Clean up old rotated system logs (if accessible)
+              echo ""
+              echo "Cleaning system log rotations..."
+              SYSTEM_LOGS="/var/log/syslog.* /var/log/messages.* /var/log/kern.log.*"
+              for pattern in $SYSTEM_LOGS; do
+                if ls $pattern > /dev/null 2>&1; then
+                  find $(dirname $pattern) -name "$(basename $pattern)" -mtime +$LOG_RETENTION_DAYS -delete 2>/dev/null || true
+                fi
+              done
+              
+              # Special handling for high-volume logs
+              echo ""
+              echo "Processing high-volume logs..."
+              
+              # Kubernetes audit logs (if present)
+              if [ -d "/var/log/audit" ]; then
+                echo "  Cleaning audit logs..."
+                find /var/log/audit -name "*.log" -mtime +7 -delete 2>/dev/null || true
+              fi
+              
+              # Container runtime logs
+              if [ -d "/var/log/containers" ]; then
+                echo "  Cleaning container logs..."
+                # Keep only last 3 days of container logs (they can be huge)
+                find /var/log/containers -name "*.log" -mtime +3 -delete 2>/dev/null || true
+              fi
+              
+              # Check disk usage after cleanup
+              echo ""
+              echo "Disk usage AFTER cleanup:"
+              df -h | grep -E "(Filesystem|/var/log|/tmp)"
+              
+              # Generate cleanup report
+              echo ""
+              echo "========================================"
+              echo "Cleanup Summary:"
+              echo "  Total space freed: ${TOTAL_FREED}K ($(($TOTAL_FREED / 1024))MB)"
+              echo "  Active log retention: $LOG_RETENTION_DAYS days"
+              echo "  Compressed log retention: $COMPRESSED_LOG_RETENTION_DAYS days"
+              echo "  Temp log retention: $TEMP_LOG_RETENTION_DAYS days" 
+              echo "  Completed: $(date)"
+              echo "========================================"
+              
+              # Alert if insufficient space freed (less than 100MB)
+              if [ "$TOTAL_FREED" -lt 102400 ]; then
+                echo "WARNING: Low space freed ($TOTAL_FREED KB). Check retention policies."
+              fi
+            
+            volumeMounts:
+            - name: app-logs
+              mountPath: /var/log/applications
+            - name: nginx-logs
+              mountPath: /var/log/nginx
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: container-logs
+              mountPath: /var/log/containers
+              readOnly: true
+            
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+          
+          volumes:
+          - name: app-logs
+            hostPath:
+              path: /var/log/applications
+          - name: nginx-logs
+            hostPath:
+              path: /var/log/nginx
+          - name: pod-logs
+            hostPath:
+              path: /var/log/pods
+          - name: container-logs
+            hostPath:
+              path: /var/log/containers
+
+---
+# --------------------------------------------------------------------
+# TEMPORARY FILE CLEANUP - System-wide temp file management
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: temp-file-cleanup
+  annotations:
+    team.company.com/owner: "platform-team"
+    cleanup.company.com/type: "temporary-files"
+spec:
+  # Every 6 hours - more frequent for temp files
+  schedule: "0 */6 * * *"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 8  # 2 days worth
+  failedJobsHistoryLimit: 3
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800  # 30 minutes
+      
+      template:
+        metadata:
+          labels:
+            cleanup-type: temp-files
+            schedule: every-6-hours
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: temp-cleanup
+            image: alpine:3.18
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              echo "========================================"
+              echo "Temporary File Cleanup"
+              echo "Started: $(date)"
+              echo "========================================"
+              
+              # Cleanup targets and retention periods
+              TEMP_DIRS="/tmp /var/tmp /tmp/app-cache /tmp/build-cache"
+              TEMP_FILE_RETENTION=1      # 1 day for general temp files
+              CACHE_RETENTION=3          # 3 days for cache files
+              BUILD_RETENTION=7          # 7 days for build artifacts
+              
+              TOTAL_FILES_REMOVED=0
+              TOTAL_SPACE_FREED=0
+              
+              for TEMP_DIR in $TEMP_DIRS; do
+                if [ -d "$TEMP_DIR" ]; then
+                  echo ""
+                  echo "Processing: $TEMP_DIR"
+                  
+                  # Get before stats
+                  BEFORE_FILES=$(find "$TEMP_DIR" -type f 2>/dev/null | wc -l)
+                  BEFORE_SIZE=$(du -sk "$TEMP_DIR" 2>/dev/null | cut -f1)
+                  
+                  echo "  Files before: $BEFORE_FILES"
+                  echo "  Size before: ${BEFORE_SIZE}K"
+                  
+                  # Remove different types of temp files with different retention
+                  case "$TEMP_DIR" in
+                    "/tmp/app-cache")
+                      echo "  Cleaning application cache files..."
+                      find "$TEMP_DIR" -type f -mtime +$CACHE_RETENTION -delete 2>/dev/null || true
+                      ;;
+                    "/tmp/build-cache")
+                      echo "  Cleaning build cache files..."
+                      find "$TEMP_DIR" -type f -mtime +$BUILD_RETENTION -delete 2>/dev/null || true
+                      ;;
+                    *)
+                      echo "  Cleaning general temporary files..."
+                      # Remove old temporary files
+                      find "$TEMP_DIR" -type f -mtime +$TEMP_FILE_RETENTION -delete 2>/dev/null || true
+                      
+                      # Remove specific patterns immediately if they're old enough
+                      find "$TEMP_DIR" -name "*.tmp" -mtime +0 -delete 2>/dev/null || true
+                      find "$TEMP_DIR" -name "*.temp" -mtime +0 -delete 2>/dev/null || true
+                      find "$TEMP_DIR" -name "core.*" -mtime +0 -delete 2>/dev/null || true
+                      find "$TEMP_DIR" -name "*.pid" -mtime +0 -delete 2>/dev/null || true
+                      ;;
+                  esac
+                  
+                  # Remove empty directories
+                  find "$TEMP_DIR" -type d -empty -delete 2>/dev/null || true
+                  
+                  # Get after stats
+                  AFTER_FILES=$(find "$TEMP_DIR" -type f 2>/dev/null | wc -l)
+                  AFTER_SIZE=$(du -sk "$TEMP_DIR" 2>/dev/null | cut -f1)
+                  
+                  FILES_REMOVED=$((BEFORE_FILES - AFTER_FILES))
+                  SPACE_FREED=$((BEFORE_SIZE - AFTER_SIZE))
+                  
+                  TOTAL_FILES_REMOVED=$((TOTAL_FILES_REMOVED + FILES_REMOVED))
+                  TOTAL_SPACE_FREED=$((TOTAL_SPACE_FREED + SPACE_FREED))
+                  
+                  echo "  Files after: $AFTER_FILES"
+                  echo "  Size after: ${AFTER_SIZE}K"
+                  echo "  Files removed: $FILES_REMOVED"
+                  echo "  Space freed: ${SPACE_FREED}K"
+                  
+                else
+                  echo "Directory not found: $TEMP_DIR"
+                fi
+              done
+              
+              # Clean up process-specific temp files
+              echo ""
+              echo "Cleaning process-specific temp files..."
+              
+              # Docker build cache (if accessible)
+              if [ -d "/var/lib/docker/tmp" ]; then
+                echo "  Cleaning Docker temp files..."
+                find /var/lib/docker/tmp -type f -mtime +1 -delete 2>/dev/null || true
+              fi
+              
+              # Kubernetes temp files
+              K8S_TEMP_DIRS="/var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/tmp"
+              for k8s_temp in $K8S_TEMP_DIRS; do
+                if [ -d "$k8s_temp" ]; then
+                  echo "  Cleaning Kubernetes temp: $k8s_temp"
+                  find "$k8s_temp" -type f -mtime +1 -delete 2>/dev/null || true
+                fi
+              done
+              
+              # Application-specific cleanup
+              echo ""
+              echo "Application-specific cleanup..."
+              
+              # Node.js cache and temp files
+              find /tmp -name ".npm" -type d -mtime +7 -exec rm -rf {} \; 2>/dev/null || true
+              find /tmp -name "npm-*" -type d -mtime +3 -exec rm -rf {} \; 2>/dev/null || true
+              
+              # Python cache files
+              find /tmp -name "__pycache__" -type d -exec rm -rf {} \; 2>/dev/null || true
+              find /tmp -name "*.pyc" -type f -delete 2>/dev/null || true
+              
+              # Java temp files
+              find /tmp -name "hsperfdata_*" -type d -mtime +1 -exec rm -rf {} \; 2>/dev/null || true
+              find /tmp -name "*.hprof" -type f -mtime +1 -delete 2>/dev/null || true
+              
+              # Generate final report
+              echo ""
+              echo "========================================"
+              echo "Temp File Cleanup Summary:"
+              echo "  Total files removed: $TOTAL_FILES_REMOVED"
+              echo "  Total space freed: ${TOTAL_SPACE_FREED}K ($(($TOTAL_SPACE_FREED / 1024))MB)"
+              echo "  Retention policies:"
+              echo "    General temp files: $TEMP_FILE_RETENTION day(s)"
+              echo "    Cache files: $CACHE_RETENTION day(s)"
+              echo "    Build files: $BUILD_RETENTION day(s)"
+              echo "  Completed: $(date)"
+              echo "========================================"
+            
+            volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: var-tmp
+              mountPath: /var/tmp
+            - name: docker-tmp
+              mountPath: /var/lib/docker/tmp
+              readOnly: false
+            
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "50m"
+              limits:
+                memory: "128Mi"
+                cpu: "100m"
+          
+          volumes:
+          - name: tmp-volume
+            hostPath:
+              path: /tmp
+          - name: var-tmp
+            hostPath:
+              path: /var/tmp
+          - name: docker-tmp
+            hostPath:
+              path: /var/lib/docker/tmp
+
+---
+# --------------------------------------------------------------------
+# DATABASE CLEANUP - Old data archival and cleanup
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-cleanup
+  annotations:
+    team.company.com/owner: "database-team"
+    cleanup.company.com/type: "data-archival"
+    cleanup.company.com/tables: "logs,sessions,temp_data"
+spec:
+  # Weekly on Sunday at 4:00 AM
+  schedule: "0 4 * * 0"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 4  # Keep 4 weeks
+  failedJobsHistoryLimit: 2
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200  # 2 hours for database operations
+      
+      template:
+        metadata:
+          labels:
+            cleanup-type: database
+            schedule: weekly
+        spec:
+          restartPolicy: OnFailure
+          
+          # Use service account with database cleanup permissions
+          serviceAccountName: database-cleanup-sa
+          
+          containers:
+          - name: db-cleanup
+            image: postgres:16-alpine
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              echo "========================================"
+              echo "Database Cleanup and Archival"
+              echo "Started: $(date)"
+              echo "Database: $DB_NAME"
+              echo "========================================"
+              
+              # Retention policies (in days)
+              LOG_RETENTION=90        # Keep application logs for 90 days
+              SESSION_RETENTION=30    # Keep user sessions for 30 days
+              TEMP_DATA_RETENTION=7   # Keep temp data for 7 days
+              AUDIT_RETENTION=365     # Keep audit logs for 1 year
+              
+              echo "Data retention policies:"
+              echo "  Application logs: $LOG_RETENTION days"
+              echo "  User sessions: $SESSION_RETENTION days"
+              echo "  Temporary data: $TEMP_DATA_RETENTION days"
+              echo "  Audit logs: $AUDIT_RETENTION days"
+              
+              # Connect and verify database
+              echo ""
+              echo "Connecting to database..."
+              psql -h $DB_HOST -d $DB_NAME -c "SELECT version();" > /dev/null || {
+                echo "ERROR: Cannot connect to database"
+                exit 1
+              }
+              
+              TOTAL_DELETED=0
+              
+              # Clean up application logs
+              echo ""
+              echo "Cleaning application logs older than $LOG_RETENTION days..."
+              DELETED_LOGS=$(psql -h $DB_HOST -d $DB_NAME -t -c "
+                DELETE FROM application_logs 
+                WHERE created_at < NOW() - INTERVAL '$LOG_RETENTION days'
+                RETURNING id;
+              " | wc -l)
+              echo "  Deleted log entries: $DELETED_LOGS"
+              TOTAL_DELETED=$((TOTAL_DELETED + DELETED_LOGS))
+              
+              # Clean up expired user sessions
+              echo ""
+              echo "Cleaning expired user sessions..."
+              DELETED_SESSIONS=$(psql -h $DB_HOST -d $DB_NAME -t -c "
+                DELETE FROM user_sessions 
+                WHERE last_activity < NOW() - INTERVAL '$SESSION_RETENTION days'
+                   OR expires_at < NOW()
+                RETURNING session_id;
+              " | wc -l)
+              echo "  Deleted sessions: $DELETED_SESSIONS"
+              TOTAL_DELETED=$((TOTAL_DELETED + DELETED_SESSIONS))
+              
+              # Clean up temporary data
+              echo ""
+              echo "Cleaning temporary data..."
+              DELETED_TEMP=$(psql -h $DB_HOST -d $DB_NAME -t -c "
+                DELETE FROM temp_data 
+                WHERE created_at < NOW() - INTERVAL '$TEMP_DATA_RETENTION days'
+                RETURNING id;
+              " | wc -l)
+              echo "  Deleted temp records: $DELETED_TEMP"
+              TOTAL_DELETED=$((TOTAL_DELETED + DELETED_TEMP))
+              
+              # Archive old audit logs (move to archive table)
+              echo ""
+              echo "Archiving old audit logs..."
+              psql -h $DB_HOST -d $DB_NAME << EOF
+              -- Create archive table if it doesn't exist
+              CREATE TABLE IF NOT EXISTS audit_logs_archive (
+                LIKE audit_logs INCLUDING ALL
+              );
+              
+              -- Move old audit logs to archive
+              WITH moved_rows AS (
+                DELETE FROM audit_logs 
+                WHERE created_at < NOW() - INTERVAL '$AUDIT_RETENTION days'
+                RETURNING *
+              )
+              INSERT INTO audit_logs_archive SELECT * FROM moved_rows;
+              EOF
+              
+              ARCHIVED_AUDIT=$(psql -h $DB_HOST -d $DB_NAME -t -c "
+                SELECT COUNT(*) FROM audit_logs_archive 
+                WHERE created_at >= NOW() - INTERVAL '7 days';
+              ")
+              echo "  Archived audit logs (last 7 days): $ARCHIVED_AUDIT"
+              
+              # Vacuum and analyze affected tables
+              echo ""
+              echo "Optimizing database after cleanup..."
+              psql -h $DB_HOST -d $DB_NAME << EOF
+              VACUUM ANALYZE application_logs;
+              VACUUM ANALYZE user_sessions;
+              VACUUM ANALYZE temp_data;
+              VACUUM ANALYZE audit_logs;
+              EOF
+              
+              # Get database size information
+              echo ""
+              echo "Database size information:"
+              psql -h $DB_HOST -d $DB_NAME -c "
+                SELECT 
+                  schemaname,
+                  tablename,
+                  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size,
+                  pg_size_pretty(pg_relation_size(schemaname||'.'||tablename)) as table_size
+                FROM pg_tables 
+                WHERE schemaname = 'public' 
+                  AND tablename IN ('application_logs', 'user_sessions', 'temp_data', 'audit_logs')
+                ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+              "
+              
+              echo ""
+              echo "========================================"
+              echo "Database Cleanup Summary:"
+              echo "  Total records deleted: $TOTAL_DELETED"
+              echo "  Audit logs archived: $ARCHIVED_AUDIT"
+              echo "  Tables optimized: application_logs, user_sessions, temp_data, audit_logs"
+              echo "  Completed: $(date)"
+              echo "========================================"
+              
+              # Alert if no records were deleted (might indicate an issue)
+              if [ "$TOTAL_DELETED" -eq 0 ]; then
+                echo "WARNING: No records were deleted. Check retention policies and data."
+              fi
+            
+            env:
+            - name: DB_HOST
+              value: "postgres.database.svc.cluster.local"
+            - name: DB_NAME
+              value: "production"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: database-cleanup-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-cleanup-credentials
+                  key: password
+            
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+
+---
+# --------------------------------------------------------------------
+# CONTAINER IMAGE CLEANUP - Remove unused Docker images
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: container-image-cleanup
+  annotations:
+    team.company.com/owner: "platform-team"
+    cleanup.company.com/type: "container-images"
+spec:
+  # Weekly on Saturday at 2:00 AM
+  schedule: "0 2 * * 6"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 4
+  failedJobsHistoryLimit: 2
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600  # 1 hour
+      
+      template:
+        metadata:
+          labels:
+            cleanup-type: container-images
+            schedule: weekly
+        spec:
+          restartPolicy: OnFailure
+          
+          # Run on nodes to clean local images
+          hostNetwork: true
+          hostPID: true
+          
+          containers:
+          - name: image-cleanup
+            image: docker:24-cli
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              echo "========================================"
+              echo "Container Image Cleanup"
+              echo "Started: $(date)"
+              echo "========================================"
+              
+              # Check Docker connectivity
+              if ! docker version > /dev/null 2>&1; then
+                echo "ERROR: Cannot connect to Docker daemon"
+                exit 1
+              fi
+              
+              # Get before stats
+              echo "Images before cleanup:"
+              BEFORE_IMAGES=$(docker images -q | wc -l)
+              BEFORE_SIZE=$(docker system df | grep "Images" | awk '{print $3}')
+              echo "  Total images: $BEFORE_IMAGES"
+              echo "  Total size: $BEFORE_SIZE"
+              
+              echo ""
+              echo "Starting cleanup operations..."
+              
+              # Remove dangling images (untagged)
+              echo "Removing dangling images..."
+              DANGLING_REMOVED=$(docker image prune -f 2>&1 | grep "deleted" | wc -l)
+              echo "  Dangling images removed: $DANGLING_REMOVED"
+              
+              # Remove unused images (not referenced by any container)
+              echo "Removing unused images..."
+              UNUSED_REMOVED=$(docker image prune -a -f --filter "until=168h" 2>&1 | grep "deleted" | wc -l)
+              echo "  Unused images removed: $UNUSED_REMOVED"
+              
+              # Remove stopped containers
+              echo "Removing stopped containers..."
+              CONTAINERS_REMOVED=$(docker container prune -f 2>&1 | grep "deleted" | wc -l)
+              echo "  Stopped containers removed: $CONTAINERS_REMOVED"
+              
+              # Remove unused volumes
+              echo "Removing unused volumes..."
+              VOLUMES_REMOVED=$(docker volume prune -f 2>&1 | grep "deleted" | wc -l)
+              echo "  Unused volumes removed: $VOLUMES_REMOVED"
+              
+              # Remove unused networks
+              echo "Removing unused networks..."
+              NETWORKS_REMOVED=$(docker network prune -f 2>&1 | grep "deleted" | wc -l)
+              echo "  Unused networks removed: $NETWORKS_REMOVED"
+              
+              # Clean build cache
+              echo "Cleaning build cache..."
+              docker builder prune -f > /dev/null 2>&1
+              echo "  Build cache cleaned"
+              
+              # Get after stats
+              echo ""
+              echo "Images after cleanup:"
+              AFTER_IMAGES=$(docker images -q | wc -l)
+              AFTER_SIZE=$(docker system df | grep "Images" | awk '{print $3}')
+              echo "  Total images: $AFTER_IMAGES"
+              echo "  Total size: $AFTER_SIZE"
+              
+              IMAGES_REMOVED=$((BEFORE_IMAGES - AFTER_IMAGES))
+              
+              # Show disk usage
+              echo ""
+              echo "Docker system usage:"
+              docker system df
+              
+              echo ""
+              echo "========================================"
+              echo "Container Image Cleanup Summary:"
+              echo "  Images removed: $IMAGES_REMOVED"
+              echo "  Dangling images: $DANGLING_REMOVED"
+              echo "  Unused images: $UNUSED_REMOVED"
+              echo "  Containers removed: $CONTAINERS_REMOVED"
+              echo "  Volumes removed: $VOLUMES_REMOVED"
+              echo "  Networks removed: $NETWORKS_REMOVED"
+              echo "  Size before: $BEFORE_SIZE"
+              echo "  Size after: $AFTER_SIZE"
+              echo "  Completed: $(date)"
+              echo "========================================"
+            
+            volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+            
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+            
+            securityContext:
+              privileged: true  # Required for Docker socket access
+          
+          volumes:
+          - name: docker-sock
+            hostPath:
+              path: /var/run/docker.sock
+
+---
+# ====================================================================
+# COMPREHENSIVE SYSTEM CLEANUP - Monthly deep cleaning
+# ====================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: monthly-deep-cleanup
+  annotations:
+    team.company.com/owner: "platform-team"
+    cleanup.company.com/type: "comprehensive"
+    cleanup.company.com/frequency: "monthly"
+spec:
+  # First Sunday of each month at 5:00 AM
+  schedule: "0 5 1-7 * 0"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 12  # Keep full year
+  failedJobsHistoryLimit: 3
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 14400  # 4 hours for comprehensive cleanup
+      
+      template:
+        metadata:
+          labels:
+            cleanup-type: comprehensive
+            schedule: monthly
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: deep-cleanup
+            image: alpine:3.18
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              echo "========================================"
+              echo "Monthly Deep System Cleanup"
+              echo "Started: $(date)"
+              echo "========================================"
+              
+              # Install required tools
+              apk add --no-cache findutils coreutils
+              
+              echo "Performing comprehensive system cleanup..."
+              
+              # Very old log cleanup (6+ months)
+              echo ""
+              echo "1. Cleaning very old logs (6+ months)..."
+              find /var/log -name "*.log*" -mtime +180 -delete 2>/dev/null || true
+              find /var/log -name "*.gz" -mtime +180 -delete 2>/dev/null || true
+              
+              # Old crash dumps and core files
+              echo ""
+              echo "2. Cleaning crash dumps and core files..."
+              find /tmp -name "core.*" -mtime +7 -delete 2>/dev/null || true
+              find /var/crash -type f -mtime +30 -delete 2>/dev/null || true
+              
+              # Package manager caches
+              echo ""
+              echo "3. Cleaning package manager caches..."
+              rm -rf /var/cache/apk/* 2>/dev/null || true
+              rm -rf /tmp/apk-* 2>/dev/null || true
+              
+              # Old backup files in system directories
+              echo ""
+              echo "4. Cleaning old backup files..."
+              find /etc -name "*.bak" -mtime +90 -delete 2>/dev/null || true
+              find /etc -name "*.backup" -mtime +90 -delete 2>/dev/null || true
+              find /etc -name "*~" -mtime +30 -delete 2>/dev/null || true
+              
+              # Large files in temp directories
+              echo ""
+              echo "5. Finding and removing large temp files (>100MB)..."
+              find /tmp -type f -size +100M -mtime +1 -exec ls -lh {} \; 2>/dev/null || true
+              find /tmp -type f -size +100M -mtime +1 -delete 2>/dev/null || true
+              
+              # Old lock files
+              echo ""
+              echo "6. Cleaning old lock files..."
+              find /var/lock -name "*.lock" -mtime +1 -delete 2>/dev/null || true
+              find /tmp -name "*.lock" -mtime +1 -delete 2>/dev/null || true
+              
+              # Clean up old PID files
+              echo ""
+              echo "7. Cleaning old PID files..."
+              find /var/run -name "*.pid" -mtime +1 -delete 2>/dev/null || true
+              find /tmp -name "*.pid" -mtime +1 -delete 2>/dev/null || true
+              
+              # Remove empty directories recursively
+              echo ""
+              echo "8. Removing empty directories..."
+              find /tmp -type d -empty -delete 2>/dev/null || true
+              find /var/tmp -type d -empty -delete 2>/dev/null || true
+              find /var/log -type d -empty -delete 2>/dev/null || true
+              
+              # Generate comprehensive disk usage report
+              echo ""
+              echo "========================================"
+              echo "DISK USAGE REPORT"
+              echo "========================================"
+              echo "Overall disk usage:"
+              df -h
+              
+              echo ""
+              echo "Largest directories in /var:"
+              du -sh /var/* 2>/dev/null | sort -hr | head -10
+              
+              echo ""
+              echo "Largest directories in /tmp:"
+              du -sh /tmp/* 2>/dev/null | sort -hr | head -10
+              
+              echo ""
+              echo "========================================"
+              echo "Monthly Deep Cleanup Completed!"
+              echo "Completed: $(date)"
+              echo "========================================"
+            
+            volumeMounts:
+            - name: var-volume
+              mountPath: /var
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: etc-volume
+              mountPath: /etc
+              readOnly: true
+            
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "200m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+          
+          volumes:
+          - name: var-volume
+            hostPath:
+              path: /var
+          - name: tmp-volume
+            hostPath:
+              path: /tmp
+          - name: etc-volume
+            hostPath:
+              path: /etc
+
+---
+# ====================================================================
+# CLEANUP CRONJOB PATTERNS SUMMARY
+# ====================================================================
+#
+# Key Patterns:
+#
+# 1. LOG ROTATION AND CLEANUP
+#    - Daily maintenance of application logs
+#    - Compression of recent logs, deletion of old logs
+#    - Multiple retention policies by log type
+#
+# 2. TEMPORARY FILE CLEANUP
+#    - Frequent cleanup of temp files
+#    - Application-specific cache clearing
+#    - Process-specific temp file removal
+#
+# 3. DATABASE CLEANUP
+#    - Archival of old transactional data
+#    - Session and log table maintenance
+#    - Database optimization after cleanup
+#
+# 4. CONTAINER IMAGE CLEANUP
+#    - Removal of unused Docker images
+#    - Container and volume cleanup
+#    - Build cache clearing
+#
+# 5. COMPREHENSIVE SYSTEM CLEANUP
+#    - Monthly deep cleaning
+#    - Large file identification and removal
+#    - System-wide maintenance
+#
+# Best Practices:
+# 1. Use different retention policies for different data types
+# 2. Always check disk space before and after cleanup
+# 3. Generate comprehensive cleanup reports
+# 4. Use appropriate timeouts for large cleanup operations
+# 5. Implement safety checks to prevent accidental data loss
+# 6. Schedule cleanup during low-traffic periods
+# 7. Monitor cleanup effectiveness and adjust policies
+#
+# ====================================================================

@@ -1,0 +1,771 @@
+# ====================================================================
+# BACKUP CRONJOBS - Automated backup solutions
+# ====================================================================
+#
+# Pattern: Scheduled backup operations for data protection
+# Use Cases: Database backups, file backups, configuration backups
+# Key Point: Reliability over speed, with comprehensive error handling
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# DATABASE BACKUP - Full PostgreSQL backup with S3 upload
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-full-backup
+  annotations:
+    team.company.com/owner: "database-team"
+    team.company.com/slack: "#database-alerts"
+    backup.company.com/type: "full-database"
+    backup.company.com/retention: "30-days"
+    monitoring.company.com/alert-on-failure: "true"
+    runbook.company.com/url: "https://wiki.company.com/runbooks/database-backup"
+spec:
+  # Daily at 2:00 AM UTC (low traffic time)
+  schedule: "0 2 * * *"
+  timeZone: "UTC"
+  
+  # Backup jobs should never overlap
+  concurrencyPolicy: Forbid
+  
+  # Keep a month of successful backups, but save failures for debugging
+  successfulJobsHistoryLimit: 30
+  failedJobsHistoryLimit: 5
+  
+  # Must start within 10 minutes of scheduled time
+  startingDeadlineSeconds: 600
+  
+  jobTemplate:
+    metadata:
+      annotations:
+        backup.company.com/database: "production"
+        backup.company.com/method: "pg_dump"
+    spec:
+      # Allow up to 4 hours for large database backups
+      activeDeadlineSeconds: 14400
+      
+      template:
+        metadata:
+          annotations:
+            # Critical job - don't evict during backup
+            cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+          labels:
+            backup-type: database
+            database: postgres
+            criticality: high
+        spec:
+          restartPolicy: OnFailure
+          
+          # Use service account with backup permissions
+          serviceAccountName: postgres-backup-sa
+          
+          containers:
+          - name: postgres-backup
+            image: postgres:16-alpine
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e  # Exit on any error
+              
+              echo "========================================"
+              echo "PostgreSQL Full Backup"
+              echo "Started: $(date)"
+              echo "Database: $DB_NAME"
+              echo "Host: $DB_HOST"
+              echo "========================================"
+              
+              # Backup configuration
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              BACKUP_FILE="postgres_${DB_NAME}_full_${TIMESTAMP}.sql.gz"
+              LOCAL_PATH="/tmp/${BACKUP_FILE}"
+              S3_PATH="s3://${S3_BUCKET}/database-backups/${BACKUP_FILE}"
+              
+              echo "Backup file: $BACKUP_FILE"
+              echo "S3 destination: $S3_PATH"
+              
+              # Pre-backup checks
+              echo "Performing pre-backup validation..."
+              
+              # Test database connectivity
+              psql -h $DB_HOST -d $DB_NAME -c "SELECT version();" > /dev/null || {
+                echo "ERROR: Cannot connect to database"
+                exit 1
+              }
+              
+              # Check available disk space (need at least 10GB free)
+              DISK_FREE=$(df /tmp | tail -1 | awk '{print $4}')
+              if [ "$DISK_FREE" -lt 10485760 ]; then  # 10GB in KB
+                echo "ERROR: Insufficient disk space for backup"
+                echo "Available: ${DISK_FREE}KB, Required: 10GB"
+                exit 1
+              fi
+              
+              # Check database size
+              DB_SIZE=$(psql -h $DB_HOST -d $DB_NAME -t -c "SELECT pg_size_pretty(pg_database_size('$DB_NAME'));")
+              echo "Database size: $DB_SIZE"
+              
+              # Perform backup with progress
+              echo "Starting database dump..."
+              START_TIME=$(date +%s)
+              
+              # Use pg_dump with compression and verbose output
+              pg_dump -h $DB_HOST -U $DB_USER -d $DB_NAME \
+                --verbose \
+                --no-password \
+                --format=custom \
+                --compress=9 \
+                --file=$LOCAL_PATH.pgdump || {
+                echo "ERROR: pg_dump failed"
+                exit 1
+              }
+              
+              # Convert to gzipped SQL for compatibility
+              pg_restore --no-owner --no-privileges --clean --if-exists \
+                $LOCAL_PATH.pgdump | gzip > $LOCAL_PATH
+              
+              rm $LOCAL_PATH.pgdump
+              
+              END_TIME=$(date +%s)
+              DURATION=$((END_TIME - START_TIME))
+              
+              # Verify backup file
+              if [ ! -f "$LOCAL_PATH" ]; then
+                echo "ERROR: Backup file not created"
+                exit 1
+              fi
+              
+              BACKUP_SIZE=$(du -h $LOCAL_PATH | cut -f1)
+              echo "Backup created successfully"
+              echo "File size: $BACKUP_SIZE"
+              echo "Duration: ${DURATION} seconds"
+              
+              # Upload to S3 with metadata
+              echo "Uploading backup to S3..."
+              aws s3 cp $LOCAL_PATH $S3_PATH \
+                --metadata "database=$DB_NAME,backup-type=full,created-by=cronjob,size=$BACKUP_SIZE,duration=${DURATION}s" \
+                --storage-class STANDARD_IA || {
+                echo "ERROR: S3 upload failed"
+                exit 1
+              }
+              
+              # Verify S3 upload
+              aws s3 ls $S3_PATH > /dev/null || {
+                echo "ERROR: Backup not found in S3 after upload"
+                exit 1
+              }
+              
+              # Clean up local file
+              rm $LOCAL_PATH
+              
+              # Update backup registry (for tracking)
+              REGISTRY_ENTRY="{\"timestamp\":\"$TIMESTAMP\",\"database\":\"$DB_NAME\",\"size\":\"$BACKUP_SIZE\",\"duration\":${DURATION},\"location\":\"$S3_PATH\"}"
+              echo $REGISTRY_ENTRY | aws s3 cp - s3://${S3_BUCKET}/backup-registry/${TIMESTAMP}.json
+              
+              echo "========================================"
+              echo "Backup completed successfully!"
+              echo "Timestamp: $TIMESTAMP"
+              echo "File: $BACKUP_FILE"
+              echo "Size: $BACKUP_SIZE"
+              echo "Duration: ${DURATION}s"
+              echo "Location: $S3_PATH"
+              echo "Completed: $(date)"
+              echo "========================================"
+            
+            env:
+            - name: DB_HOST
+              value: "postgres.database.svc.cluster.local"
+            - name: DB_NAME
+              value: "production"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-backup-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-backup-credentials
+                  key: password
+            - name: S3_BUCKET
+              value: "company-database-backups"
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            
+            resources:
+              requests:
+                memory: "1Gi"
+                cpu: "200m"
+              limits:
+                memory: "4Gi"
+                cpu: "1"
+            
+            # Health check for long-running backup
+            livenessProbe:
+              exec:
+                command:
+                - sh
+                - -c
+                - "ps aux | grep -v grep | grep pg_dump"
+              initialDelaySeconds: 300
+              periodSeconds: 300
+
+---
+# --------------------------------------------------------------------
+# APPLICATION DATA BACKUP - File-based backup with versioning
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: app-data-backup
+  annotations:
+    team.company.com/owner: "application-team"
+    backup.company.com/type: "application-data"
+    backup.company.com/includes: "uploads,configs,user-data"
+spec:
+  # Every 6 hours for critical application data
+  schedule: "0 */6 * * *"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 8  # 2 days of backups (4 per day)
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600  # 1 hour timeout
+      
+      template:
+        metadata:
+          labels:
+            backup-type: application-data
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: app-backup
+            image: alpine:3.18
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              # Install required tools
+              apk add --no-cache aws-cli tar gzip
+              
+              echo "========================================"
+              echo "Application Data Backup"
+              echo "Started: $(date)"
+              echo "========================================"
+              
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              BACKUP_NAME="app-data-backup-${TIMESTAMP}"
+              BACKUP_FILE="/tmp/${BACKUP_NAME}.tar.gz"
+              
+              # Define backup directories
+              BACKUP_DIRS="/data/uploads /data/configs /data/user-files"
+              
+              echo "Creating backup archive..."
+              echo "Backup directories: $BACKUP_DIRS"
+              
+              # Create compressed archive
+              tar -czf $BACKUP_FILE $BACKUP_DIRS || {
+                echo "ERROR: Failed to create backup archive"
+                exit 1
+              }
+              
+              # Get backup size
+              BACKUP_SIZE=$(du -h $BACKUP_FILE | cut -f1)
+              echo "Backup size: $BACKUP_SIZE"
+              
+              # Calculate checksums for integrity
+              MD5_CHECKSUM=$(md5sum $BACKUP_FILE | cut -d' ' -f1)
+              SHA256_CHECKSUM=$(sha256sum $BACKUP_FILE | cut -d' ' -f1)
+              
+              echo "MD5: $MD5_CHECKSUM"
+              echo "SHA256: $SHA256_CHECKSUM"
+              
+              # Upload to S3 with checksums as metadata
+              S3_PATH="s3://${S3_BUCKET}/app-data-backups/${BACKUP_NAME}.tar.gz"
+              
+              echo "Uploading to: $S3_PATH"
+              aws s3 cp $BACKUP_FILE $S3_PATH \
+                --metadata "md5=$MD5_CHECKSUM,sha256=$SHA256_CHECKSUM,timestamp=$TIMESTAMP" || {
+                echo "ERROR: Failed to upload backup to S3"
+                exit 1
+              }
+              
+              # Create checksum file
+              echo "$MD5_CHECKSUM  ${BACKUP_NAME}.tar.gz" > /tmp/${BACKUP_NAME}.md5
+              echo "$SHA256_CHECKSUM  ${BACKUP_NAME}.tar.gz" > /tmp/${BACKUP_NAME}.sha256
+              
+              aws s3 cp /tmp/${BACKUP_NAME}.md5 s3://${S3_BUCKET}/app-data-backups/
+              aws s3 cp /tmp/${BACKUP_NAME}.sha256 s3://${S3_BUCKET}/app-data-backups/
+              
+              # Clean up local files
+              rm $BACKUP_FILE /tmp/${BACKUP_NAME}.md5 /tmp/${BACKUP_NAME}.sha256
+              
+              echo "========================================"
+              echo "Application backup completed!"
+              echo "File: ${BACKUP_NAME}.tar.gz"
+              echo "Size: $BACKUP_SIZE"
+              echo "Location: $S3_PATH"
+              echo "Completed: $(date)"
+              echo "========================================"
+            
+            env:
+            - name: S3_BUCKET
+              value: "company-app-backups"
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            
+            volumeMounts:
+            - name: app-uploads
+              mountPath: /data/uploads
+              readOnly: true
+            - name: app-configs
+              mountPath: /data/configs
+              readOnly: true
+            - name: user-files
+              mountPath: /data/user-files
+              readOnly: true
+            
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "200m"
+              limits:
+                memory: "2Gi"
+                cpu: "1"
+          
+          volumes:
+          - name: app-uploads
+            persistentVolumeClaim:
+              claimName: app-uploads-pvc
+          - name: app-configs
+            configMap:
+              name: app-configuration
+          - name: user-files
+            persistentVolumeClaim:
+              claimName: user-files-pvc
+
+---
+# --------------------------------------------------------------------
+# ETCD BACKUP - Kubernetes cluster state backup
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-backup
+  annotations:
+    team.company.com/owner: "platform-team"
+    backup.company.com/type: "etcd-cluster-state"
+    backup.company.com/criticality: "critical"
+spec:
+  # Every 4 hours for cluster state backup
+  schedule: "0 */4 * * *"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 12  # 2 days of backups
+  failedJobsHistoryLimit: 5
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800  # 30 minutes
+      
+      template:
+        metadata:
+          labels:
+            backup-type: etcd
+            criticality: critical
+        spec:
+          restartPolicy: OnFailure
+          
+          # Run on control plane nodes
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          
+          # Allow running on control plane (override taints)
+          tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+          
+          hostNetwork: true  # Access etcd on host network
+          
+          containers:
+          - name: etcd-backup
+            image: quay.io/coreos/etcd:v3.5.9
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              echo "========================================"
+              echo "etcd Backup"
+              echo "Started: $(date)"
+              echo "========================================"
+              
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              BACKUP_FILE="/backup/etcd-backup-${TIMESTAMP}.db"
+              
+              # Create etcd backup using etcdctl
+              echo "Creating etcd snapshot..."
+              ETCDCTL_API=3 etcdctl snapshot save $BACKUP_FILE \
+                --endpoints=https://127.0.0.1:2379 \
+                --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+                --cert=/etc/kubernetes/pki/etcd/server.crt \
+                --key=/etc/kubernetes/pki/etcd/server.key || {
+                echo "ERROR: Failed to create etcd snapshot"
+                exit 1
+              }
+              
+              # Verify snapshot
+              echo "Verifying snapshot integrity..."
+              ETCDCTL_API=3 etcdctl snapshot status $BACKUP_FILE || {
+                echo "ERROR: Snapshot verification failed"
+                exit 1
+              }
+              
+              # Get backup size
+              BACKUP_SIZE=$(du -h $BACKUP_FILE | cut -f1)
+              echo "Backup size: $BACKUP_SIZE"
+              
+              # Compress backup
+              echo "Compressing backup..."
+              gzip $BACKUP_FILE
+              BACKUP_FILE="${BACKUP_FILE}.gz"
+              
+              # Upload to S3
+              echo "Uploading to S3..."
+              aws s3 cp $BACKUP_FILE s3://${S3_BUCKET}/etcd-backups/ \
+                --metadata "timestamp=$TIMESTAMP,cluster=$CLUSTER_NAME" || {
+                echo "ERROR: Failed to upload to S3"
+                exit 1
+              }
+              
+              # Clean up local backup
+              rm $BACKUP_FILE
+              
+              echo "========================================"
+              echo "etcd backup completed!"
+              echo "Timestamp: $TIMESTAMP"
+              echo "Size: $BACKUP_SIZE"
+              echo "Completed: $(date)"
+              echo "========================================"
+            
+            env:
+            - name: S3_BUCKET
+              value: "company-etcd-backups"
+            - name: CLUSTER_NAME
+              value: "production-cluster"
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            
+            volumeMounts:
+            - name: etcd-certs
+              mountPath: /etc/kubernetes/pki/etcd
+              readOnly: true
+            - name: backup-storage
+              mountPath: /backup
+            
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+          
+          volumes:
+          - name: etcd-certs
+            hostPath:
+              path: /etc/kubernetes/pki/etcd
+          - name: backup-storage
+            emptyDir: {}
+
+---
+# ====================================================================
+# BACKUP RETENTION AND CLEANUP CRONJOB
+# ====================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-cleanup
+  annotations:
+    team.company.com/owner: "platform-team"
+    cleanup.company.com/type: "backup-retention"
+spec:
+  # Daily at 6 AM - after backups are complete
+  schedule: "0 6 * * *"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600  # 1 hour
+      
+      template:
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: backup-cleanup
+            image: alpine:3.18
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              # Install AWS CLI
+              apk add --no-cache aws-cli
+              
+              echo "========================================"
+              echo "Backup Retention Cleanup"
+              echo "Started: $(date)"
+              echo "========================================"
+              
+              # Define retention policies (in days)
+              DB_RETENTION=30      # Keep database backups for 30 days
+              APP_RETENTION=14     # Keep app backups for 14 days
+              ETCD_RETENTION=7     # Keep etcd backups for 7 days
+              
+              # Calculate cutoff dates
+              DB_CUTOFF=$(date -d "$DB_RETENTION days ago" +%Y%m%d)
+              APP_CUTOFF=$(date -d "$APP_RETENTION days ago" +%Y%m%d)
+              ETCD_CUTOFF=$(date -d "$ETCD_RETENTION days ago" +%Y%m%d)
+              
+              echo "Retention policies:"
+              echo "  Database backups: $DB_RETENTION days (cutoff: $DB_CUTOFF)"
+              echo "  Application backups: $APP_RETENTION days (cutoff: $APP_CUTOFF)"
+              echo "  etcd backups: $ETCD_RETENTION days (cutoff: $ETCD_CUTOFF)"
+              
+              # Clean up database backups
+              echo "Cleaning up old database backups..."
+              aws s3 ls s3://$S3_BUCKET/database-backups/ | while read -r line; do
+                createDate=$(echo $line | awk '{print $1}')
+                createTime=$(echo $line | awk '{print $2}')
+                fileName=$(echo $line | awk '{print $4}')
+                
+                if [ ! -z "$fileName" ]; then
+                  fileDate=$(echo $fileName | grep -o '[0-9]\{8\}' | head -1)
+                  if [ ! -z "$fileDate" ] && [ "$fileDate" -lt "$DB_CUTOFF" ]; then
+                    echo "  Deleting old database backup: $fileName"
+                    aws s3 rm s3://$S3_BUCKET/database-backups/$fileName
+                  fi
+                fi
+              done
+              
+              # Clean up application backups
+              echo "Cleaning up old application backups..."
+              aws s3 ls s3://$S3_BUCKET/app-data-backups/ | while read -r line; do
+                fileName=$(echo $line | awk '{print $4}')
+                if [ ! -z "$fileName" ]; then
+                  fileDate=$(echo $fileName | grep -o '[0-9]\{8\}' | head -1)
+                  if [ ! -z "$fileDate" ] && [ "$fileDate" -lt "$APP_CUTOFF" ]; then
+                    echo "  Deleting old app backup: $fileName"
+                    aws s3 rm s3://$S3_BUCKET/app-data-backups/$fileName
+                  fi
+                fi
+              done
+              
+              # Clean up etcd backups
+              echo "Cleaning up old etcd backups..."
+              aws s3 ls s3://$S3_BUCKET/etcd-backups/ | while read -r line; do
+                fileName=$(echo $line | awk '{print $4}')
+                if [ ! -z "$fileName" ]; then
+                  fileDate=$(echo $fileName | grep -o '[0-9]\{8\}' | head -1)
+                  if [ ! -z "$fileDate" ] && [ "$fileDate" -lt "$ETCD_CUTOFF" ]; then
+                    echo "  Deleting old etcd backup: $fileName"
+                    aws s3 rm s3://$S3_BUCKET/etcd-backups/$fileName
+                  fi
+                fi
+              done
+              
+              echo "========================================"
+              echo "Backup cleanup completed!"
+              echo "Completed: $(date)"
+              echo "========================================"
+            
+            env:
+            - name: S3_BUCKET
+              value: "company-database-backups"  # Adjust based on bucket naming
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+
+---
+# ====================================================================
+# BACKUP MONITORING AND VALIDATION
+# ====================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-validation
+  annotations:
+    team.company.com/owner: "platform-team"
+    monitoring.company.com/type: "backup-validation"
+spec:
+  # Daily at 8 AM - validate that backups were created
+  schedule: "0 8 * * *"
+  timeZone: "UTC"
+  
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800  # 30 minutes
+      
+      template:
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: backup-validator
+            image: alpine:3.18
+            command: ["sh", "-c"]
+            args:
+            - |
+              set -e
+              
+              # Install required tools
+              apk add --no-cache aws-cli curl
+              
+              echo "========================================"
+              echo "Backup Validation Check"
+              echo "Started: $(date)"
+              echo "========================================"
+              
+              # Check if backups from last 24 hours exist
+              YESTERDAY=$(date -d "1 day ago" +%Y%m%d)
+              TODAY=$(date +%Y%m%d)
+              
+              VALIDATION_ERRORS=0
+              
+              # Validate database backups
+              echo "Checking database backups for $YESTERDAY and $TODAY..."
+              DB_BACKUP_COUNT=$(aws s3 ls s3://$S3_BUCKET/database-backups/ | grep -E "($YESTERDAY|$TODAY)" | wc -l)
+              
+              if [ "$DB_BACKUP_COUNT" -lt 1 ]; then
+                echo "❌ ERROR: No recent database backups found!"
+                VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+              else
+                echo "✅ Found $DB_BACKUP_COUNT recent database backup(s)"
+              fi
+              
+              # Validate application backups
+              echo "Checking application backups..."
+              APP_BACKUP_COUNT=$(aws s3 ls s3://$S3_BUCKET/app-data-backups/ | grep -E "($YESTERDAY|$TODAY)" | wc -l)
+              
+              if [ "$APP_BACKUP_COUNT" -lt 4 ]; then
+                echo "❌ ERROR: Insufficient application backups found! Expected: >=4, Found: $APP_BACKUP_COUNT"
+                VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+              else
+                echo "✅ Found $APP_BACKUP_COUNT recent application backup(s)"
+              fi
+              
+              # Validate etcd backups  
+              echo "Checking etcd backups..."
+              ETCD_BACKUP_COUNT=$(aws s3 ls s3://$S3_BUCKET/etcd-backups/ | grep -E "($YESTERDAY|$TODAY)" | wc -l)
+              
+              if [ "$ETCD_BACKUP_COUNT" -lt 6 ]; then
+                echo "❌ ERROR: Insufficient etcd backups found! Expected: >=6, Found: $ETCD_BACKUP_COUNT"
+                VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+              else
+                echo "✅ Found $ETCD_BACKUP_COUNT recent etcd backup(s)"
+              fi
+              
+              # Send alert if validation fails
+              if [ "$VALIDATION_ERRORS" -gt 0 ]; then
+                echo "========================================"
+                echo "❌ BACKUP VALIDATION FAILED!"
+                echo "Errors found: $VALIDATION_ERRORS"
+                echo "========================================"
+                
+                # In production, would send alert to monitoring system
+                # curl -X POST "$SLACK_WEBHOOK" -d "{\"text\":\"Backup validation failed with $VALIDATION_ERRORS errors\"}"
+                
+                exit 1
+              else
+                echo "========================================"
+                echo "✅ All backup validations passed!"
+                echo "========================================"
+              fi
+            
+            env:
+            - name: S3_BUCKET
+              value: "company-database-backups"
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            # - name: SLACK_WEBHOOK
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: monitoring-webhooks
+            #       key: slack-webhook
+            
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "50m"
+              limits:
+                memory: "256Mi"
+                cpu: "100m"
+
+---
+# ====================================================================
+# BACKUP CRONJOB PATTERNS SUMMARY
+# ====================================================================
+#
+# Key Patterns:
+#
+# 1. FULL DATABASE BACKUP
+#    - Comprehensive data protection
+#    - Integrity verification
+#    - S3 upload with metadata
+#    - Error handling and rollback
+#
+# 2. APPLICATION DATA BACKUP
+#    - File-based backup with versioning
+#    - Checksum verification
+#    - Multiple data sources
+#
+# 3. SYSTEM STATE BACKUP (etcd)
+#    - Cluster configuration backup
+#    - Control plane access required
+#    - Critical for disaster recovery
+#
+# 4. RETENTION MANAGEMENT
+#    - Automated cleanup of old backups
+#    - Different retention policies per backup type
+#    - Cost optimization
+#
+# 5. BACKUP VALIDATION
+#    - Monitoring backup creation
+#    - Alerting on missing backups
+#    - Compliance verification
+#
+# Best Practices:
+# 1. Use concurrencyPolicy: Forbid for backup jobs
+# 2. Set appropriate timeouts for large backups
+# 3. Implement comprehensive error handling
+# 4. Verify backup integrity before cleanup
+# 5. Use metadata for backup tracking
+# 6. Monitor backup success/failure rates
+# 7. Test backup restoration procedures regularly
+#
+# ====================================================================

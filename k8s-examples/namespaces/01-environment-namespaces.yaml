@@ -1,0 +1,400 @@
+# ====================================================================
+# ENVIRONMENT-BASED NAMESPACES
+# ====================================================================
+#
+# Pattern: Separate namespaces for dev, staging, production
+# Benefits: Clear environment boundaries, different policies per env
+# Use Case: Standard deployment pipeline with environment promotion
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# DEVELOPMENT ENVIRONMENT
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: myapp-dev
+  labels:
+    environment: development
+    application: myapp
+    lifecycle: temporary
+    auto-deploy: enabled
+  annotations:
+    # Development settings
+    team.company.com/owner: "development-team"
+    ci.company.com/auto-deploy: "true"
+    ci.company.com/source-branch: "develop"
+    auto-cleanup.company.com/enabled: "true"
+    auto-cleanup.company.com/retention: "7d"
+    resource-limits.company.com/relaxed: "true"
+
+---
+# Relaxed resource quota for development
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: myapp-dev
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    pods: "50"
+    services: "20"
+    persistentvolumeclaims: "10"
+
+---
+# --------------------------------------------------------------------
+# STAGING ENVIRONMENT  
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: myapp-staging
+  labels:
+    environment: staging
+    application: myapp
+    lifecycle: stable
+    promote-from: myapp-dev
+    promote-to: myapp-prod
+  annotations:
+    # Staging settings
+    team.company.com/owner: "qa-team"
+    ci.company.com/auto-deploy: "false"  # Manual promotion
+    ci.company.com/smoke-tests: "true"
+    ci.company.com/load-tests: "true"
+    monitoring.company.com/level: "standard"
+    backup.company.com/enabled: "false"  # No backup needed for staging
+
+---
+# Production-like resource quota for staging
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: staging-quota
+  namespace: myapp-staging
+spec:
+  hard:
+    requests.cpu: "6"
+    requests.memory: 12Gi
+    limits.cpu: "12"
+    limits.memory: 24Gi
+    pods: "30" 
+    services: "15"
+    persistentvolumeclaims: "5"
+
+---
+# --------------------------------------------------------------------
+# PRODUCTION ENVIRONMENT
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: myapp-prod
+  labels:
+    environment: production
+    application: myapp
+    lifecycle: permanent
+    criticality: high
+    backup: enabled
+    monitoring: enhanced
+  annotations:
+    # Production settings
+    team.company.com/owner: "sre-team"
+    team.company.com/oncall: "sre-oncall@company.com"
+    ci.company.com/auto-deploy: "false"  # Manual deployment only
+    backup.company.com/enabled: "true"
+    backup.company.com/frequency: "daily"
+    backup.company.com/retention: "30d"
+    monitoring.company.com/level: "enhanced"
+    alerting.company.com/pager-duty: "true"
+    alerting.company.com/slack: "#production-alerts"
+    compliance.company.com/audit: "required"
+    compliance.company.com/framework: "SOC2"
+
+---
+# Strict resource quota for production
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: prod-quota
+  namespace: myapp-prod
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: 20Gi
+    limits.cpu: "20" 
+    limits.memory: 40Gi
+    pods: "20"          # Fewer pods but more resources each
+    services: "10"
+    persistentvolumeclaims: "3"
+    secrets: "50"       # More secrets for production config
+
+---
+# --------------------------------------------------------------------
+# NETWORK POLICIES FOR ENVIRONMENT ISOLATION
+# --------------------------------------------------------------------
+
+# Development: Allow all traffic (for debugging)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dev-allow-all
+  namespace: myapp-dev
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - {}  # Allow all ingress
+  egress:
+  - {}  # Allow all egress
+
+---
+# Staging: Moderate restrictions
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: staging-controlled-access
+  namespace: myapp-staging
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          environment: staging
+    - namespaceSelector:
+        matchLabels:
+          environment: development  # Allow dev to call staging
+  egress:
+  - to: []  # Allow all egress for external dependencies
+
+---
+# Production: Strict network isolation  
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prod-strict-isolation
+  namespace: myapp-prod
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          environment: production  # Only prod-to-prod
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx     # Allow ingress controller
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          environment: production
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system      # Allow DNS resolution
+  - to: []  # Allow external egress for APIs, databases
+
+---
+# --------------------------------------------------------------------
+# LIMIT RANGES FOR ENVIRONMENT-SPECIFIC DEFAULTS
+# --------------------------------------------------------------------
+
+# Development: Relaxed limits for experimentation
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: dev-limits
+  namespace: myapp-dev
+spec:
+  limits:
+  - type: Container
+    default:          # Default limits if not specified
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:   # Default requests if not specified
+      cpu: "100m"
+      memory: "128Mi"
+    max:             # Maximum allowed
+      cpu: "2"
+      memory: "4Gi"
+    min:             # Minimum required
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Production: Conservative defaults, strict limits
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: prod-limits
+  namespace: myapp-prod
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: "200m"      # Higher default for production
+      memory: "256Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    max:
+      cpu: "4"         # Higher max for production workloads
+      memory: "8Gi"
+    min:
+      cpu: "50m"
+      memory: "64Mi"
+  - type: PersistentVolumeClaim
+    max:
+      storage: "100Gi"  # Limit PVC size in production
+    min:
+      storage: "1Gi"
+
+---
+# --------------------------------------------------------------------
+# EXAMPLE APPLICATION DEPLOYED ACROSS ENVIRONMENTS
+# --------------------------------------------------------------------
+
+# Development deployment - single replica for testing
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: myapp-dev
+spec:
+  replicas: 1  # Single replica for dev
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+        environment: development
+    spec:
+      containers:
+      - name: app
+        image: myapp:dev-latest  # Dev image tag
+        env:
+        - name: ENVIRONMENT
+          value: "development"
+        - name: LOG_LEVEL
+          value: "debug"
+        - name: DATABASE_URL
+          value: "postgres://dev-db.myapp-dev.svc.cluster.local:5432/myapp"
+
+---
+# Staging deployment - production-like setup
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: myapp-staging
+spec:
+  replicas: 2  # Small HA setup for staging
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+        environment: staging
+    spec:
+      containers:
+      - name: app
+        image: myapp:v1.2.3  # Specific version for staging
+        env:
+        - name: ENVIRONMENT
+          value: "staging"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: DATABASE_URL
+          value: "postgres://staging-db.myapp-staging.svc.cluster.local:5432/myapp"
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+
+---
+# Production deployment - full HA with resources
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: myapp-prod
+spec:
+  replicas: 5  # Full HA for production
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+        environment: production
+    spec:
+      containers:
+      - name: app
+        image: myapp:v1.2.3  # Same version as staging after promotion
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: LOG_LEVEL
+          value: "warn"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: url
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          periodSeconds: 10
+
+---
+# ====================================================================
+# ENVIRONMENT PROMOTION WORKFLOW
+# ====================================================================
+#
+# 1. Developer commits to feature branch
+# 2. CI builds and deploys to myapp-dev automatically
+# 3. QA tests in development, approves for staging
+# 4. Manual promotion: deploy same image to myapp-staging  
+# 5. QA runs staging tests, load tests, smoke tests
+# 6. Manual promotion: deploy same image to myapp-prod
+# 7. SRE monitors production deployment
+#
+# Commands for promotion:
+#   kubectl set image deployment/myapp app=myapp:v1.2.3 -n myapp-staging
+#   kubectl set image deployment/myapp app=myapp:v1.2.3 -n myapp-prod
+#
+# ====================================================================

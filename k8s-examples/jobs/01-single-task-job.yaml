@@ -1,0 +1,587 @@
+# ====================================================================
+# SINGLE TASK JOB - One task, run to completion
+# ====================================================================
+#
+# Pattern: Run one specific task that finishes and exits
+# Use Cases: Data migration, one-time setup, report generation
+# Key Point: completions=1, parallelism=1 for single execution
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# BASIC SINGLE TASK - Simple one-time execution
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: database-setup
+  annotations:
+    team.company.com/owner: "backend-team"
+    job.company.com/purpose: "initial-database-setup"
+    job.company.com/estimated-duration: "5-minutes"
+spec:
+  # Single task execution
+  completions: 1     # Need exactly 1 successful completion
+  parallelism: 1     # Run 1 pod at a time
+  
+  # Failure handling
+  backoffLimit: 2              # Retry up to 2 times
+  activeDeadlineSeconds: 600   # 10 minute timeout
+  ttlSecondsAfterFinished: 300 # Clean up after 5 minutes
+  
+  template:
+    metadata:
+      labels:
+        job-type: database-setup
+        environment: production
+    spec:
+      restartPolicy: Never  # Create new pod on failure
+      
+      containers:
+      - name: setup
+        image: postgres:16-alpine
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Starting database setup..."
+          echo "Setup started at: $(date)"
+          
+          # Connect to database
+          echo "Connecting to database..."
+          psql -h $DB_HOST -d postgres -c "SELECT version();"
+          
+          # Create database if not exists
+          echo "Creating application database..."
+          psql -h $DB_HOST -d postgres -c "CREATE DATABASE IF NOT EXISTS myapp;"
+          
+          # Create user if not exists
+          echo "Creating application user..."
+          psql -h $DB_HOST -d postgres -c "
+            DO \$\$
+            BEGIN
+              IF NOT EXISTS (SELECT FROM pg_user WHERE usename = 'appuser') THEN
+                CREATE USER appuser WITH PASSWORD '$DB_PASSWORD';
+              END IF;
+            END
+            \$\$;
+          "
+          
+          # Grant permissions
+          echo "Granting permissions..."
+          psql -h $DB_HOST -d postgres -c "GRANT ALL PRIVILEGES ON DATABASE myapp TO appuser;"
+          
+          echo "Database setup completed successfully at: $(date)"
+        
+        env:
+        - name: DB_HOST
+          value: "postgres.database.svc.cluster.local"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-database-credentials
+              key: password
+        - name: PGUSER
+          value: "postgres"
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-admin-credentials
+              key: password
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# --------------------------------------------------------------------
+# DATA MIGRATION TASK - One-time data transformation
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: user-data-migration
+  annotations:
+    team.company.com/owner: "data-team"
+    migration.company.com/version: "v1.3.0"
+    migration.company.com/type: "user-schema-update"
+spec:
+  completions: 1
+  parallelism: 1
+  
+  # Migration-specific settings
+  backoffLimit: 0              # Don't retry migrations automatically
+  activeDeadlineSeconds: 3600  # 1 hour timeout
+  ttlSecondsAfterFinished: 86400  # Keep for 24 hours for review
+  
+  template:
+    metadata:
+      annotations:
+        # Prevent pod eviction during critical migration
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      labels:
+        job-type: data-migration
+        criticality: high
+    spec:
+      restartPolicy: Never
+      
+      # Use service account with migration permissions
+      serviceAccountName: data-migration-sa
+      
+      containers:
+      - name: migrator
+        image: postgres:16-alpine
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "========================================"
+          echo "User Data Migration v1.3.0"
+          echo "Started: $(date)"
+          echo "========================================"
+          
+          # Pre-migration validation
+          echo "Step 1: Pre-migration validation"
+          
+          # Check record count
+          BEFORE_COUNT=$(psql -h $DB_HOST -d $DB_NAME -t -c "SELECT COUNT(*) FROM users;")
+          echo "Records before migration: $BEFORE_COUNT"
+          
+          if [ "$BEFORE_COUNT" -eq 0 ]; then
+            echo "WARNING: No users found. Is this the correct database?"
+            echo "Continuing with migration..."
+          fi
+          
+          # Check for conflicting data
+          CONFLICT_COUNT=$(psql -h $DB_HOST -d $DB_NAME -t -c "SELECT COUNT(*) FROM users WHERE email IS NULL OR email = '';")
+          if [ "$CONFLICT_COUNT" -gt 0 ]; then
+            echo "ERROR: Found $CONFLICT_COUNT users with missing email addresses"
+            echo "Migration cannot proceed with incomplete data"
+            exit 1
+          fi
+          
+          # Step 2: Create backup
+          echo "Step 2: Creating backup"
+          pg_dump -h $DB_HOST -d $DB_NAME -t users > /tmp/users_backup_$(date +%Y%m%d_%H%M%S).sql
+          echo "Backup created successfully"
+          
+          # Step 3: Run migration
+          echo "Step 3: Executing migration"
+          psql -h $DB_HOST -d $DB_NAME << 'EOF'
+          BEGIN;
+          
+          -- Add new columns for user preferences
+          ALTER TABLE users 
+          ADD COLUMN IF NOT EXISTS preferences JSONB DEFAULT '{}',
+          ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'UTC',
+          ADD COLUMN IF NOT EXISTS notification_settings JSONB DEFAULT '{"email": true, "sms": false}';
+          
+          -- Update existing users with default preferences
+          UPDATE users SET 
+            preferences = CASE 
+              WHEN preferences IS NULL THEN '{}'::jsonb 
+              ELSE preferences 
+            END,
+            timezone = CASE 
+              WHEN timezone IS NULL OR timezone = '' THEN 'UTC' 
+              ELSE timezone 
+            END,
+            notification_settings = CASE 
+              WHEN notification_settings IS NULL THEN '{"email": true, "sms": false}'::jsonb 
+              ELSE notification_settings 
+            END
+          WHERE preferences IS NULL OR timezone IS NULL OR notification_settings IS NULL;
+          
+          -- Add indexes for new columns
+          CREATE INDEX IF NOT EXISTS idx_users_timezone ON users(timezone);
+          CREATE INDEX IF NOT EXISTS idx_users_preferences ON users USING GIN(preferences);
+          
+          COMMIT;
+          EOF
+          
+          # Step 4: Verify migration
+          echo "Step 4: Verifying migration"
+          
+          AFTER_COUNT=$(psql -h $DB_HOST -d $DB_NAME -t -c "SELECT COUNT(*) FROM users;")
+          echo "Records after migration: $AFTER_COUNT"
+          
+          if [ "$BEFORE_COUNT" -ne "$AFTER_COUNT" ]; then
+            echo "ERROR: Record count mismatch! Before: $BEFORE_COUNT, After: $AFTER_COUNT"
+            exit 1
+          fi
+          
+          # Check new columns exist
+          NEW_COLS=$(psql -h $DB_HOST -d $DB_NAME -t -c "
+            SELECT COUNT(*) FROM information_schema.columns 
+            WHERE table_name = 'users' 
+            AND column_name IN ('preferences', 'timezone', 'notification_settings');
+          ")
+          
+          if [ "$NEW_COLS" -ne 3 ]; then
+            echo "ERROR: Not all new columns were created. Expected 3, found $NEW_COLS"
+            exit 1
+          fi
+          
+          # Check data integrity
+          NULL_COUNT=$(psql -h $DB_HOST -d $DB_NAME -t -c "
+            SELECT COUNT(*) FROM users 
+            WHERE preferences IS NULL OR timezone IS NULL OR notification_settings IS NULL;
+          ")
+          
+          if [ "$NULL_COUNT" -gt 0 ]; then
+            echo "ERROR: Found $NULL_COUNT records with NULL values in new columns"
+            exit 1
+          fi
+          
+          echo "========================================"
+          echo "Migration completed successfully!"
+          echo "Completed: $(date)"
+          echo "Records processed: $AFTER_COUNT"
+          echo "New columns: preferences, timezone, notification_settings"
+          echo "========================================"
+        
+        env:
+        - name: DB_HOST
+          value: "postgres.database.svc.cluster.local"
+        - name: DB_NAME
+          value: "production"
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: migration-credentials
+              key: username
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: migration-credentials
+              key: password
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+
+---
+# --------------------------------------------------------------------
+# REPORT GENERATION TASK - Periodic business report
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: monthly-report-$(date +%Y%m)
+  annotations:
+    team.company.com/owner: "analytics-team"
+    report.company.com/type: "monthly-summary"
+    report.company.com/period: "$(date +%Y-%m)"
+spec:
+  completions: 1
+  parallelism: 1
+  
+  backoffLimit: 1              # Reports should be consistent, don't retry
+  activeDeadlineSeconds: 1800  # 30 minute timeout
+  ttlSecondsAfterFinished: 86400  # Keep for 24 hours
+  
+  template:
+    metadata:
+      labels:
+        job-type: report-generation
+        report-period: "$(date +%Y-%m)"
+    spec:
+      restartPolicy: Never
+      
+      containers:
+      - name: report-generator
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          import json
+          import datetime
+          import time
+          import psycopg2
+          import os
+          
+          print("==============================================")
+          print("Monthly Business Report Generator")
+          print(f"Report Period: {datetime.date.today().strftime('%Y-%m')}")
+          print(f"Generated: {datetime.datetime.now()}")
+          print("==============================================")
+          
+          # Connect to database
+          print("Connecting to database...")
+          conn = psycopg2.connect(
+              host=os.environ.get('DB_HOST'),
+              database=os.environ.get('DB_NAME'),
+              user=os.environ.get('DB_USER'),
+              password=os.environ.get('DB_PASSWORD')
+          )
+          cursor = conn.cursor()
+          
+          # Calculate report period
+          today = datetime.date.today()
+          start_of_month = today.replace(day=1)
+          if today.month == 12:
+              end_of_month = today.replace(year=today.year+1, month=1, day=1) - datetime.timedelta(days=1)
+          else:
+              end_of_month = today.replace(month=today.month+1, day=1) - datetime.timedelta(days=1)
+          
+          print(f"Analyzing data from {start_of_month} to {end_of_month}")
+          
+          # Generate report data
+          report = {
+              "period": {
+                  "start": start_of_month.isoformat(),
+                  "end": end_of_month.isoformat(),
+                  "generated": datetime.datetime.now().isoformat()
+              },
+              "metrics": {}
+          }
+          
+          # User metrics
+          print("Calculating user metrics...")
+          cursor.execute("""
+              SELECT 
+                  COUNT(*) as total_users,
+                  COUNT(*) FILTER (WHERE created_at >= %s) as new_users,
+                  COUNT(*) FILTER (WHERE last_login >= %s) as active_users
+              FROM users
+          """, (start_of_month, start_of_month))
+          
+          user_data = cursor.fetchone()
+          report["metrics"]["users"] = {
+              "total": user_data[0],
+              "new_this_month": user_data[1],
+              "active_this_month": user_data[2]
+          }
+          
+          # Order metrics (if orders table exists)
+          print("Calculating order metrics...")
+          try:
+              cursor.execute("""
+                  SELECT 
+                      COUNT(*) as total_orders,
+                      SUM(total_amount) as total_revenue,
+                      AVG(total_amount) as avg_order_value
+                  FROM orders 
+                  WHERE created_at >= %s AND created_at <= %s
+              """, (start_of_month, end_of_month))
+              
+              order_data = cursor.fetchone()
+              report["metrics"]["orders"] = {
+                  "total_orders": order_data[0] or 0,
+                  "total_revenue": float(order_data[1] or 0),
+                  "average_order_value": float(order_data[2] or 0)
+              }
+          except psycopg2.Error as e:
+              print(f"Note: Orders table not found or accessible: {e}")
+              report["metrics"]["orders"] = {
+                  "total_orders": 0,
+                  "total_revenue": 0.0,
+                  "average_order_value": 0.0,
+                  "note": "Orders data not available"
+              }
+          
+          # Close database connection
+          cursor.close()
+          conn.close()
+          
+          # Format and display report
+          print("\n==============================================")
+          print("MONTHLY REPORT SUMMARY")
+          print("==============================================")
+          print(f"Report Period: {report['period']['start']} to {report['period']['end']}")
+          print(f"Total Users: {report['metrics']['users']['total']:,}")
+          print(f"New Users This Month: {report['metrics']['users']['new_this_month']:,}")
+          print(f"Active Users This Month: {report['metrics']['users']['active_this_month']:,}")
+          print(f"Total Orders: {report['metrics']['orders']['total_orders']:,}")
+          print(f"Total Revenue: ${report['metrics']['orders']['total_revenue']:,.2f}")
+          print(f"Average Order Value: ${report['metrics']['orders']['average_order_value']:,.2f}")
+          print("==============================================")
+          
+          # Save report to file (would typically upload to S3 or similar)
+          report_filename = f"/tmp/monthly_report_{today.strftime('%Y_%m')}.json"
+          with open(report_filename, 'w') as f:
+              json.dump(report, f, indent=2)
+          
+          print(f"Report saved to: {report_filename}")
+          print("Report generation completed successfully!")
+        
+        env:
+        - name: DB_HOST
+          value: "postgres.database.svc.cluster.local"
+        - name: DB_NAME
+          value: "production"
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: reporting-credentials
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: reporting-credentials
+              key: password
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+
+---
+# --------------------------------------------------------------------
+# CLEANUP TASK - One-time maintenance operation
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: old-logs-cleanup
+  annotations:
+    team.company.com/owner: "platform-team"
+    cleanup.company.com/type: "log-retention"
+    cleanup.company.com/target: "logs-older-than-90-days"
+spec:
+  completions: 1
+  parallelism: 1
+  
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600  # 1 hour timeout
+  ttlSecondsAfterFinished: 600 # Clean up after 10 minutes
+  
+  template:
+    metadata:
+      labels:
+        job-type: cleanup
+        target: old-logs
+    spec:
+      restartPolicy: Never
+      
+      containers:
+      - name: cleanup
+        image: busybox:1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "========================================"
+          echo "Log Cleanup Job"
+          echo "Started: $(date)"
+          echo "========================================"
+          
+          # Define cleanup targets
+          LOG_DIRS="/var/log/applications /var/log/nginx /var/log/app-logs"
+          RETENTION_DAYS=90
+          
+          echo "Cleanup policy: Remove logs older than $RETENTION_DAYS days"
+          echo "Target directories: $LOG_DIRS"
+          
+          # Check disk usage before cleanup
+          echo "Disk usage before cleanup:"
+          df -h | grep -E "(Filesystem|/var/log|/tmp)"
+          
+          TOTAL_REMOVED=0
+          TOTAL_FREED=0
+          
+          for LOG_DIR in $LOG_DIRS; do
+            if [ -d "$LOG_DIR" ]; then
+              echo "Processing directory: $LOG_DIR"
+              
+              # Count files to be removed
+              FILES_TO_REMOVE=$(find "$LOG_DIR" -type f -name "*.log*" -mtime +$RETENTION_DAYS | wc -l)
+              echo "  Files to remove: $FILES_TO_REMOVE"
+              
+              if [ "$FILES_TO_REMOVE" -gt 0 ]; then
+                # Calculate space to be freed
+                SPACE_TO_FREE=$(find "$LOG_DIR" -type f -name "*.log*" -mtime +$RETENTION_DAYS -exec du -c {} + | tail -1 | cut -f1)
+                echo "  Space to free: ${SPACE_TO_FREE}K"
+                
+                # Remove old log files
+                find "$LOG_DIR" -type f -name "*.log*" -mtime +$RETENTION_DAYS -delete
+                
+                # Remove empty directories
+                find "$LOG_DIR" -type d -empty -delete 2>/dev/null || true
+                
+                TOTAL_REMOVED=$((TOTAL_REMOVED + FILES_TO_REMOVE))
+                TOTAL_FREED=$((TOTAL_FREED + SPACE_TO_FREE))
+                
+                echo "  Cleanup completed for $LOG_DIR"
+              else
+                echo "  No files to remove in $LOG_DIR"
+              fi
+            else
+              echo "  Directory not found: $LOG_DIR"
+            fi
+          done
+          
+          # Check disk usage after cleanup
+          echo "Disk usage after cleanup:"
+          df -h | grep -E "(Filesystem|/var/log|/tmp)"
+          
+          echo "========================================"
+          echo "Cleanup Summary:"
+          echo "  Files removed: $TOTAL_REMOVED"
+          echo "  Space freed: ${TOTAL_FREED}K ($(($TOTAL_FREED / 1024))MB)"
+          echo "  Completed: $(date)"
+          echo "========================================"
+        
+        volumeMounts:
+        - name: log-volume
+          mountPath: /var/log/applications
+        - name: nginx-logs
+          mountPath: /var/log/nginx
+        - name: app-logs
+          mountPath: /var/log/app-logs
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      
+      volumes:
+      - name: log-volume
+        hostPath:
+          path: /var/log/applications
+      - name: nginx-logs
+        hostPath:
+          path: /var/log/nginx
+      - name: app-logs
+        persistentVolumeClaim:
+          claimName: app-logs-pvc
+
+---
+# ====================================================================
+# SINGLE TASK JOB PATTERNS SUMMARY
+# ====================================================================
+#
+# Key Characteristics:
+# - completions: 1 (run once, succeed once)
+# - parallelism: 1 (single pod execution)
+# - restartPolicy: Never (create new pod on failure)
+# - backoffLimit: Low number (0-2 for critical tasks)
+#
+# Common Use Cases:
+# 1. Database setup and initialization
+# 2. Schema migrations and data transformations
+# 3. Report generation and data exports
+# 4. One-time cleanup and maintenance tasks
+# 5. Application bootstrapping and configuration
+#
+# Best Practices:
+# 1. Use meaningful names with timestamps for tracking
+# 2. Add comprehensive logging for debugging
+# 3. Implement pre-checks and validation
+# 4. Create backups before destructive operations
+# 5. Verify results after completion
+# 6. Set appropriate timeouts for the task complexity
+# 7. Use service accounts with minimal required permissions
+#
+# ====================================================================

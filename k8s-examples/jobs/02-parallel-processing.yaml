@@ -1,0 +1,662 @@
+# ====================================================================
+# PARALLEL PROCESSING JOBS - Multiple workers, coordinated execution
+# ====================================================================
+#
+# Pattern: Multiple pods working on shared workload simultaneously
+# Use Cases: Batch processing, data transformation, distributed computing
+# Key Point: completions > parallelism for work distribution
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# FIXED COMPLETION PARALLEL JOB - Process specific number of items
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: image-resizing-batch
+  annotations:
+    team.company.com/owner: "media-team"
+    job.company.com/type: "batch-processing"
+    job.company.com/workload: "image-processing"
+spec:
+  # Process 100 images total with 10 workers
+  completions: 100    # Total successful pods needed
+  parallelism: 10     # Maximum pods running simultaneously
+  
+  # Each pod will process 1 image (100 completions / 10 parallel = 10 waves of workers)
+  backoffLimit: Parallel 20       # Allow some failures in parallel jobs
+  activeDeadlineSeconds: 3600  # 1 hour total timeout
+  ttlSecondsAfterFinished: 1800   # Clean up after 30 minutes
+  
+  template:
+    metadata:
+      labels:
+        job-type: image-processing
+        workload: batch
+    spec:
+      restartPolicy: Never
+      
+      containers:
+      - name: image-processor
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          import time
+          import random
+          import os
+          import uuid
+          from datetime import datetime
+          
+          # Get worker information
+          worker_id = os.environ.get('HOSTNAME', 'unknown')
+          job_index = os.environ.get('JOB_COMPLETION_INDEX', 'auto')
+          
+          print(f"======================================")
+          print(f"Image Processing Worker: {worker_id}")
+          print(f"Job Index: {job_index}")
+          print(f"Started: {datetime.now()}")
+          print(f"======================================")
+          
+          # Simulate getting image from queue/list
+          image_id = f"img_{random.randint(10000, 99999)}"
+          image_size = random.choice(['small', 'medium', 'large', 'xlarge'])
+          
+          print(f"Processing image: {image_id}")
+          print(f"Image size category: {image_size}")
+          
+          # Simulate different processing times based on image size
+          processing_times = {
+              'small': random.randint(5, 15),
+              'medium': random.randint(15, 30),
+              'large': random.randint(30, 60),
+              'xlarge': random.randint(60, 120)
+          }
+          
+          processing_time = processing_times[image_size]
+          print(f"Estimated processing time: {processing_time} seconds")
+          
+          # Simulate image processing steps
+          steps = [
+              "Loading original image",
+              "Analyzing image properties", 
+              "Calculating resize dimensions",
+              "Applying resize transformation",
+              "Optimizing image quality",
+              "Generating thumbnails",
+              "Saving processed images",
+              "Updating image metadata"
+          ]
+          
+          step_time = processing_time / len(steps)
+          
+          for i, step in enumerate(steps, 1):
+              print(f"Step {i}/{len(steps)}: {step}...")
+              time.sleep(step_time)
+              
+              # Simulate occasional processing variations
+              if random.random() < 0.1:  # 10% chance
+                  additional_time = random.randint(2, 5)
+                  print(f"  Complex processing detected, adding {additional_time}s...")
+                  time.sleep(additional_time)
+          
+          # Simulate upload to storage
+          print("Uploading processed images...")
+          time.sleep(random.randint(2, 8))
+          
+          # Final success
+          end_time = datetime.now()
+          print(f"======================================")
+          print(f"Image {image_id} processed successfully!")
+          print(f"Worker: {worker_id}")
+          print(f"Total time: {processing_time + random.randint(2, 8)} seconds")
+          print(f"Completed: {end_time}")
+          print(f"======================================")
+        
+        env:
+        # Kubernetes can inject job completion index for tracking
+        - name: JOB_COMPLETION_INDEX
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.kubernetes.io/job-completion-index']
+        - name: S3_BUCKET
+          value: "processed-images-bucket"
+        - name: AWS_REGION
+          value: "us-west-2"
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+
+---
+# --------------------------------------------------------------------
+# WORK QUEUE PATTERN - Workers pull from shared queue
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-processing-queue
+  annotations:
+    team.company.com/owner: "data-team"
+    job.company.com/pattern: "work-queue"
+    job.company.com/queue-type: "redis"
+spec:
+  # No completions specified - workers decide when done
+  # parallelism: 5     # 5 workers pulling from queue
+  parallelism: 5
+  
+  # Work queue jobs don't specify completions
+  # Workers exit when queue is empty
+  
+  backoffLimit: 10
+  activeDeadlineSeconds: 7200  # 2 hour maximum
+  ttlSecondsAfterFinished: 3600   # Clean up after 1 hour
+  
+  template:
+    metadata:
+      labels:
+        job-type: data-processing
+        pattern: work-queue
+    spec:
+      restartPolicy: Never
+      
+      containers:
+      - name: queue-worker
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          import time
+          import random
+          import os
+          import json
+          from datetime import datetime
+          
+          # Simulate Redis connection
+          class MockRedis:
+              def __init__(self):
+                  # Simulate a queue with work items
+                  self.queue = [f"task_{i}" for i in range(1, 51)]  # 50 tasks
+                  self.processed = 0
+                  
+              def lpop(self, queue_name):
+                  if self.queue:
+                      return self.queue.pop(0)
+                  return None
+                  
+              def llen(self, queue_name):
+                  return len(self.queue)
+          
+          worker_id = os.environ.get('HOSTNAME', 'unknown')
+          redis_client = MockRedis()
+          
+          print(f"======================================")
+          print(f"Queue Worker: {worker_id}")
+          print(f"Started: {datetime.now()}")
+          print(f"======================================")
+          
+          processed_count = 0
+          
+          while True:
+              # Pull task from queue
+              task = redis_client.lpop('processing_queue')
+              
+              if task is None:
+                  print("Queue is empty - checking for more work...")
+                  time.sleep(5)  # Wait a bit for more work
+                  
+                  # Check again after waiting
+                  task = redis_client.lpop('processing_queue')
+                  if task is None:
+                      print("No more work available - worker shutting down")
+                      break
+              
+              processed_count += 1
+              queue_length = redis_client.llen('processing_queue')
+              
+              print(f"Processing task: {task}")
+              print(f"Remaining in queue: {queue_length}")
+              print(f"Tasks processed by this worker: {processed_count}")
+              
+              # Simulate task processing
+              task_type = random.choice(['data_validation', 'data_transformation', 'data_enrichment'])
+              processing_time = {
+                  'data_validation': random.randint(5, 15),
+                  'data_transformation': random.randint(15, 45),
+                  'data_enrichment': random.randint(30, 90)
+              }[task_type]
+              
+              print(f"Task type: {task_type}")
+              print(f"Processing time: {processing_time}s")
+              
+              # Simulate processing work
+              for i in range(processing_time):
+                  time.sleep(1)
+                  if i % 10 == 0 and i > 0:
+                      print(f"  Progress: {i}/{processing_time}s")
+              
+              # Simulate occasional failures (5% chance)
+              if random.random() < 0.05:
+                  print(f"ERROR: Task {task} failed - skipping")
+                  continue
+              
+              print(f"Task {task} completed successfully")
+              print(f"Worker {worker_id}: {processed_count} tasks completed")
+              print("---")
+          
+          print(f"======================================")
+          print(f"Worker {worker_id} shutting down")
+          print(f"Total tasks processed: {processed_count}")
+          print(f"Completed: {datetime.now()}")
+          print(f"======================================")
+        
+        env:
+        - name: REDIS_URL
+          value: "redis://redis.data-team.svc.cluster.local:6379"
+        - name: QUEUE_NAME
+          value: "processing_queue"
+        - name: WORKER_TIMEOUT
+          value: "300"  # 5 minutes max per task
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "150m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+
+---
+# --------------------------------------------------------------------
+# LARGE DATASET PARALLEL PROCESSING - High throughput batch job
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: log-analysis-parallel
+  annotations:
+    team.company.com/owner: "analytics-team"
+    job.company.com/dataset: "web-server-logs"
+    job.company.com/period: "monthly"
+spec:
+  # Process large dataset with many workers
+  completions: 50     # 50 chunks of data to process
+  parallelism: 15     # 15 workers running simultaneously
+  
+  # Large job settings
+  backoffLimit: 15               # Allow more failures for large jobs
+  activeDeadlineSeconds: 14400   # 4 hour timeout
+  ttlSecondsAfterFinished: 7200  # Keep results for 2 hours
+  
+  template:
+    metadata:
+      labels:
+        job-type: log-analysis
+        dataset: web-logs
+        scale: large
+    spec:
+      restartPolicy: Never
+      
+      containers:
+      - name: log-analyzer
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          import time
+          import random
+          import os
+          import json
+          from datetime import datetime, timedelta
+          from collections import defaultdict
+          
+          # Worker identification
+          worker_id = os.environ.get('HOSTNAME', 'unknown')
+          chunk_id = random.randint(1, 50)
+          
+          print(f"======================================")
+          print(f"Log Analysis Worker: {worker_id}")
+          print(f"Processing Chunk: {chunk_id}")
+          print(f"Started: {datetime.now()}")
+          print(f"======================================")
+          
+          # Simulate log data chunk (in real scenario, would load from S3/GCS)
+          log_entries = random.randint(10000, 50000)
+          print(f"Log entries in chunk: {log_entries:,}")
+          
+          # Initialize analysis counters
+          analysis_results = {
+              'total_requests': 0,
+              'status_codes': defaultdict(int),
+              'top_ips': defaultdict(int),
+              'response_times': [],
+              'error_count': 0,
+              'unique_users': set()
+          }
+          
+          print("Starting log analysis...")
+          batch_size = 1000
+          batches = (log_entries + batch_size - 1) // batch_size
+          
+          for batch_num in range(batches):
+              start_idx = batch_num * batch_size
+              end_idx = min(start_idx + batch_size, log_entries)
+              current_batch_size = end_idx - start_idx
+              
+              print(f"Processing batch {batch_num + 1}/{batches} ({current_batch_size} entries)")
+              
+              # Simulate processing each log entry
+              for _ in range(current_batch_size):
+                  # Simulate log entry data
+                  status_code = random.choices(
+                      [200, 404, 500, 301, 401],
+                      weights=[70, 10, 5, 10, 5]
+                  )[0]
+                  
+                  response_time = random.randint(50, 2000)  # milliseconds
+                  ip_address = f"192.168.{random.randint(1, 255)}.{random.randint(1, 255)}"
+                  user_id = f"user_{random.randint(1, 10000)}"
+                  
+                  # Update analysis
+                  analysis_results['total_requests'] += 1
+                  analysis_results['status_codes'][status_code] += 1
+                  analysis_results['top_ips'][ip_address] += 1
+                  analysis_results['response_times'].append(response_time)
+                  analysis_results['unique_users'].add(user_id)
+                  
+                  if status_code >= 400:
+                      analysis_results['error_count'] += 1
+              
+              # Simulate batch processing time
+              time.sleep(random.uniform(0.5, 2.0))
+              
+              # Progress update every 10 batches
+              if (batch_num + 1) % 10 == 0:
+                  progress = ((batch_num + 1) / batches) * 100
+                  print(f"  Progress: {progress:.1f}% ({batch_num + 1}/{batches} batches)")
+          
+          # Calculate final statistics
+          avg_response_time = sum(analysis_results['response_times']) / len(analysis_results['response_times'])
+          error_rate = (analysis_results['error_count'] / analysis_results['total_requests']) * 100
+          
+          # Get top IPs
+          top_ips = sorted(analysis_results['top_ips'].items(), key=lambda x: x[1], reverse=True)[:10]
+          
+          # Create summary report
+          summary = {
+              'chunk_id': chunk_id,
+              'worker_id': worker_id,
+              'processing_time': datetime.now().isoformat(),
+              'statistics': {
+                  'total_requests': analysis_results['total_requests'],
+                  'unique_users': len(analysis_results['unique_users']),
+                  'error_count': analysis_results['error_count'],
+                  'error_rate_percent': round(error_rate, 2),
+                  'avg_response_time_ms': round(avg_response_time, 2),
+                  'status_code_distribution': dict(analysis_results['status_codes']),
+                  'top_ips': top_ips[:5]  # Top 5 IPs
+              }
+          }
+          
+          print(f"======================================")
+          print(f"Analysis Results for Chunk {chunk_id}:")
+          print(f"  Total Requests: {summary['statistics']['total_requests']:,}")
+          print(f"  Unique Users: {summary['statistics']['unique_users']:,}")
+          print(f"  Error Rate: {summary['statistics']['error_rate_percent']}%")
+          print(f"  Avg Response Time: {summary['statistics']['avg_response_time_ms']}ms")
+          print(f"  Status Codes: {summary['statistics']['status_code_distribution']}")
+          print(f"======================================")
+          
+          # In real scenario, would save results to shared storage
+          print("Saving analysis results...")
+          time.sleep(random.uniform(1, 3))
+          
+          print(f"Chunk {chunk_id} analysis completed successfully!")
+          print(f"Worker {worker_id} finished at: {datetime.now()}")
+        
+        env:
+        - name: S3_INPUT_BUCKET
+          value: "web-server-logs"
+        - name: S3_OUTPUT_BUCKET
+          value: "log-analysis-results"
+        - name: CHUNK_SIZE
+          value: "50000"
+        - name: AWS_REGION
+          value: "us-west-2"
+        
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "300m"
+          limits:
+            memory: "4Gi"     # Higher memory for data processing
+            cpu: "2"          # More CPU for analysis
+
+---
+# --------------------------------------------------------------------
+# MACHINE LEARNING TRAINING PARALLEL JOB
+# --------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ml-hyperparameter-tuning
+  annotations:
+    team.company.com/owner: "ml-team"
+    job.company.com/model: "recommendation-engine"
+    job.company.com/experiment: "hyperparameter-search"
+spec:
+  # Try 20 different hyperparameter combinations
+  completions: 20
+  parallelism: 5      # 5 training jobs in parallel
+  
+  backoffLimit: 5     # Some hyperparameter combinations may fail
+  activeDeadlineSeconds: 10800  # 3 hours for training
+  ttlSecondsAfterFinished: 86400   # Keep results for 24 hours
+  
+  template:
+    metadata:
+      labels:
+        job-type: ml-training
+        model: recommendation-engine
+        experiment: hyperparameter-tuning
+    spec:
+      restartPolicy: Never
+      
+      containers:
+      - name: ml-trainer
+        image: python:3.11-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          import time
+          import random
+          import os
+          import json
+          import math
+          from datetime import datetime
+          
+          # Training job identification
+          worker_id = os.environ.get('HOSTNAME', 'unknown')
+          experiment_id = random.randint(1000, 9999)
+          
+          print(f"======================================")
+          print(f"ML Training Worker: {worker_id}")
+          print(f"Experiment ID: {experiment_id}")
+          print(f"Started: {datetime.now()}")
+          print(f"======================================")
+          
+          # Generate random hyperparameters
+          hyperparams = {
+              'learning_rate': random.choice([0.001, 0.01, 0.1, 0.2]),
+              'batch_size': random.choice([32, 64, 128, 256]),
+              'hidden_layers': random.choice([2, 3, 4, 5]),
+              'dropout_rate': random.choice([0.1, 0.2, 0.3, 0.4]),
+              'l2_regularization': random.choice([0.001, 0.01, 0.1]),
+              'epochs': random.choice([50, 100, 150, 200])
+          }
+          
+          print("Hyperparameters for this experiment:")
+          for param, value in hyperparams.items():
+              print(f"  {param}: {value}")
+          
+          # Simulate data loading
+          print("\nLoading training data...")
+          time.sleep(random.randint(10, 30))
+          dataset_size = random.randint(100000, 1000000)
+          print(f"Dataset size: {dataset_size:,} samples")
+          
+          # Simulate model training
+          print("\nStarting model training...")
+          epochs = hyperparams['epochs']
+          best_accuracy = 0
+          training_history = []
+          
+          for epoch in range(1, epochs + 1):
+              # Simulate training time per epoch
+              epoch_time = random.uniform(30, 120)  # 30s to 2min per epoch
+              time.sleep(epoch_time / 10)  # Scaled down for demo
+              
+              # Simulate accuracy improvement with some randomness
+              base_accuracy = 0.6 + (epoch / epochs) * 0.35  # Improve from 60% to 95%
+              noise = random.uniform(-0.05, 0.05)
+              accuracy = max(0, min(1, base_accuracy + noise))
+              
+              # Simulate loss decrease
+              loss = 2.0 * math.exp(-epoch / 20) + random.uniform(0, 0.1)
+              
+              training_history.append({
+                  'epoch': epoch,
+                  'accuracy': round(accuracy, 4),
+                  'loss': round(loss, 4),
+                  'training_time': round(epoch_time, 2)
+              })
+              
+              if accuracy > best_accuracy:
+                  best_accuracy = accuracy
+                  print(f"Epoch {epoch}/{epochs}: accuracy={accuracy:.4f}, loss={loss:.4f} (NEW BEST)")
+              else:
+                  print(f"Epoch {epoch}/{epochs}: accuracy={accuracy:.4f}, loss={loss:.4f}")
+              
+              # Early stopping simulation
+              if epoch > 10 and accuracy < 0.1:
+                  print("Early stopping: Model not converging")
+                  break
+          
+          # Simulate model evaluation
+          print("\nEvaluating model on test set...")
+          time.sleep(random.randint(5, 15))
+          
+          # Test accuracy typically slightly lower than training
+          test_accuracy = best_accuracy - random.uniform(0.01, 0.05)
+          test_accuracy = max(0, test_accuracy)
+          
+          # Calculate training metrics
+          total_training_time = sum(h['training_time'] for h in training_history)
+          final_loss = training_history[-1]['loss'] if training_history else 1.0
+          
+          # Create experiment results
+          results = {
+              'experiment_id': experiment_id,
+              'worker_id': worker_id,
+              'hyperparameters': hyperparams,
+              'training_results': {
+                  'final_train_accuracy': round(best_accuracy, 4),
+                  'final_test_accuracy': round(test_accuracy, 4),
+                  'final_loss': round(final_loss, 4),
+                  'epochs_completed': len(training_history),
+                  'total_training_time_seconds': round(total_training_time, 2),
+                  'converged': test_accuracy > 0.5
+              },
+              'training_history': training_history[-5:],  # Last 5 epochs
+              'completed_at': datetime.now().isoformat()
+          }
+          
+          print(f"======================================")
+          print(f"Training Results for Experiment {experiment_id}:")
+          print(f"  Final Training Accuracy: {results['training_results']['final_train_accuracy']:.4f}")
+          print(f"  Final Test Accuracy: {results['training_results']['final_test_accuracy']:.4f}")
+          print(f"  Final Loss: {results['training_results']['final_loss']:.4f}")
+          print(f"  Epochs Completed: {results['training_results']['epochs_completed']}")
+          print(f"  Total Training Time: {results['training_results']['total_training_time_seconds']:.2f}s")
+          print(f"  Model Converged: {results['training_results']['converged']}")
+          print(f"======================================")
+          
+          # Save results (in real scenario, would save to MLflow, S3, etc.)
+          print("Saving experiment results...")
+          time.sleep(random.randint(2, 5))
+          
+          # Determine if this is a good result
+          if test_accuracy > 0.8:
+              print("🎉 Excellent model performance! This configuration shows promise.")
+          elif test_accuracy > 0.6:
+              print("✅ Good model performance. Configuration is viable.")
+          else:
+              print("⚠️  Poor model performance. Try different hyperparameters.")
+          
+          print(f"Experiment {experiment_id} completed successfully!")
+          print(f"Worker {worker_id} finished at: {datetime.now()}")
+        
+        env:
+        - name: MODEL_TYPE
+          value: "recommendation-engine"
+        - name: DATA_PATH
+          value: "s3://ml-datasets/recommendation-data/"
+        - name: RESULTS_PATH
+          value: "s3://ml-experiments/hyperparameter-tuning/"
+        - name: MLFLOW_TRACKING_URI
+          value: "http://mlflow.ml-team.svc.cluster.local:5000"
+        
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "8Gi"     # High memory for ML training
+            cpu: "4"          # High CPU for training
+            # In production, would also request GPU:
+            # nvidia.com/gpu: 1
+
+---
+# ====================================================================
+# PARALLEL PROCESSING PATTERNS SUMMARY
+# ====================================================================
+#
+# Key Patterns:
+#
+# 1. FIXED COMPLETIONS PARALLEL
+#    - completions: N (specific number of successful pods)
+#    - parallelism: M (M < N, workers run in waves)
+#    - Use: Known amount of work to distribute
+#
+# 2. WORK QUEUE PATTERN
+#    - No completions specified
+#    - parallelism: N (number of workers)
+#    - Workers exit when queue empty
+#    - Use: Variable amount of work, shared queue
+#
+# 3. LARGE DATASET PROCESSING
+#    - High completions and parallelism
+#    - Higher resource limits
+#    - Longer timeouts
+#    - Use: Big data processing, log analysis
+#
+# 4. MACHINE LEARNING PARALLEL
+#    - Parallel hyperparameter search
+#    - Each pod trains different configuration
+#    - Results saved to shared storage
+#    - Use: ML experimentation, parameter optimization
+#
+# Best Practices:
+# 1. Set parallelism based on cluster capacity and external system limits
+# 2. Use appropriate backoffLimit for expected failure rate
+# 3. Monitor resource usage and adjust limits accordingly
+# 4. Implement progress reporting for long-running jobs
+# 5. Save intermediate results for fault tolerance
+# 6. Use shared storage for coordination and results
+#
+# ====================================================================

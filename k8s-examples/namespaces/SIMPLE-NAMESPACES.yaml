@@ -1,0 +1,384 @@
+# ====================================================================
+# NAMESPACES: Virtual Clusters for Organization and Isolation
+# ====================================================================
+#
+# WHY: Multiple teams/apps in one cluster → naming conflicts, resource chaos
+# SOLUTION: Namespaces provide logical separation within physical cluster
+#
+# KEY POINTS:
+# - Organize resources by team, environment, or application
+# - Provide resource quotas and access control boundaries  
+# - Enable cross-namespace communication via DNS
+# - Critical for multi-tenant and multi-environment clusters
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# 1. BASIC NAMESPACE - Simple namespace creation
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-team
+  
+  # Labels for organization and automation
+  labels:
+    team: platform
+    environment: development
+    cost-center: engineering
+    
+  # Annotations for operational metadata
+  annotations:
+    contact.company.com/owner: "platform-team@company.com"
+    contact.company.com/slack: "#platform-team"
+    created-by: "kubectl-demo"
+    description: "Simple namespace for team isolation"
+
+---
+# --------------------------------------------------------------------
+# 2. ENVIRONMENT NAMESPACES - Development, staging, production
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  labels:
+    environment: dev
+    lifecycle: temporary
+    auto-cleanup: enabled
+  annotations:
+    # Development-specific settings
+    auto-cleanup.company.com/retention: "7d"
+    resource-limits.company.com/relaxed: "true"
+    monitoring.company.com/level: "basic"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    environment: staging
+    lifecycle: stable
+    testing: enabled
+  annotations:
+    # Staging-specific settings
+    deployment.company.com/promote-from: "development"
+    deployment.company.com/promote-to: "production"
+    testing.company.com/smoke-tests: "true"
+    monitoring.company.com/level: "standard"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    environment: prod
+    lifecycle: permanent
+    criticality: high
+    backup: enabled
+  annotations:
+    # Production-specific settings
+    backup.company.com/enabled: "true"
+    backup.company.com/frequency: "daily"
+    monitoring.company.com/level: "enhanced"
+    alerting.company.com/pager-duty: "true"
+    compliance.company.com/audit: "required"
+
+---
+# --------------------------------------------------------------------
+# 3. TEAM NAMESPACES - Organize by team ownership
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: frontend-team
+  labels:
+    team: frontend
+    department: engineering
+    tech-stack: react
+  annotations:
+    team.company.com/lead: "alice@company.com"
+    team.company.com/slack: "#frontend-team"
+    team.company.com/repository: "github.com/company/frontend"
+    
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backend-team
+  labels:
+    team: backend
+    department: engineering
+    tech-stack: nodejs
+  annotations:
+    team.company.com/lead: "bob@company.com"
+    team.company.com/slack: "#backend-team"
+    team.company.com/repository: "github.com/company/backend"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-team
+  labels:
+    team: data
+    department: analytics
+    tech-stack: python
+  annotations:
+    team.company.com/lead: "charlie@company.com"
+    team.company.com/slack: "#data-team"
+    team.company.com/repository: "github.com/company/data-pipeline"
+
+---
+# --------------------------------------------------------------------
+# 4. APPLICATION NAMESPACES - Organize by application/product
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ecommerce-app
+  labels:
+    application: ecommerce
+    product: shopping
+    tier: business-critical
+  annotations:
+    product.company.com/owner: "product-team"
+    product.company.com/stakeholder: "cto@company.com"
+    architecture.company.com/pattern: "microservices"
+    
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: analytics-app
+  labels:
+    application: analytics
+    product: insights
+    tier: data-processing
+  annotations:
+    product.company.com/owner: "data-team"
+    product.company.com/stakeholder: "cdo@company.com"
+    architecture.company.com/pattern: "batch-processing"
+
+---
+# --------------------------------------------------------------------
+# 5. NAMESPACE WITH RESOURCE QUOTA - Control resource usage
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: limited-resources
+  labels:
+    resource-tier: small
+    quota-managed: enabled
+  annotations:
+    quota.company.com/cpu-limit: "4-cores"
+    quota.company.com/memory-limit: "8GB"
+    quota.company.com/storage-limit: "50GB"
+
+---
+# Resource quota for the namespace above
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-quota
+  namespace: limited-resources
+spec:
+  hard:
+    # Compute resources
+    requests.cpu: "2"          # 2 CPU cores requested
+    requests.memory: 4Gi       # 4GB memory requested
+    limits.cpu: "4"            # 4 CPU cores maximum
+    limits.memory: 8Gi         # 8GB memory maximum
+    
+    # Storage resources
+    requests.storage: 50Gi     # 50GB storage
+    persistentvolumeclaims: "5" # Max 5 PVCs
+    
+    # Object counts
+    pods: "20"                 # Max 20 pods
+    services: "10"             # Max 10 services
+    deployments.apps: "5"      # Max 5 deployments
+    configmaps: "20"           # Max 20 configmaps
+    secrets: "20"              # Max 20 secrets
+
+---
+# --------------------------------------------------------------------
+# 6. SECURE NAMESPACE - Enhanced security settings
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-workloads
+  labels:
+    security.company.com/level: "high"
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/warn: "restricted"
+    network-policy: "required"
+    compliance: "required"
+  annotations:
+    # Security annotations
+    security.company.com/scan-images: "true"
+    security.company.com/network-isolation: "strict"
+    compliance.company.com/framework: "SOC2"
+    audit.company.com/retention: "7-years"
+
+---
+# Network policy for secure namespace - deny all by default
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: secure-workloads
+spec:
+  podSelector: {}  # Apply to all pods in namespace
+  policyTypes:
+  - Ingress
+  - Egress
+  # No rules means deny all traffic
+
+---
+# --------------------------------------------------------------------
+# 7. MULTI-TENANT NAMESPACE - For SaaS applications
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-acme-corp
+  labels:
+    tenant.company.com/id: "acme-corp"
+    tenant.company.com/tier: "premium"
+    tenant.company.com/region: "us-east-1"
+    isolation: "strict"
+  annotations:
+    tenant.company.com/account-id: "12345"
+    tenant.company.com/contract: "enterprise"
+    tenant.company.com/support-level: "24x7"
+    billing.company.com/cost-center: "customer-acme"
+    compliance.company.com/data-residency: "us-only"
+
+---
+# --------------------------------------------------------------------
+# 8. TEMPORARY NAMESPACE - For CI/CD and testing
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-pipeline-abc123
+  labels:
+    purpose: testing
+    lifecycle: temporary
+    ci-pipeline: "abc123"
+    auto-cleanup: enabled
+  annotations:
+    # Cleanup automation
+    auto-cleanup.company.com/after: "2024-12-31T23:59:59Z"
+    auto-cleanup.company.com/trigger: "pipeline-completion"
+    
+    # CI/CD metadata
+    ci.company.com/pipeline-id: "abc123"
+    ci.company.com/branch: "feature/new-api"
+    ci.company.com/commit: "a1b2c3d4"
+    ci.company.com/pr-number: "456"
+
+---
+# ====================================================================
+# DEMONSTRATION: Cross-namespace service communication
+# ====================================================================
+
+# App in frontend namespace that needs to call backend service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: frontend-team
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: web
+        image: nginx:alpine
+        env:
+        # Cross-namespace service call using FQDN
+        - name: API_URL
+          value: "http://api-service.backend-team.svc.cluster.local:8080"
+        - name: DATABASE_URL  
+          value: "postgres://db-service.data-team.svc.cluster.local:5432/app"
+        ports:
+        - containerPort: 80
+
+---
+# Backend service that frontend will call
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: backend-team
+spec:
+  selector:
+    app: api-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Database service in data team namespace  
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-service
+  namespace: data-team
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+
+---
+# ====================================================================
+# QUICK COMMANDS FOR NAMESPACE MANAGEMENT
+# ====================================================================
+#
+# Create namespace:
+#   kubectl create namespace my-team
+#   kubectl apply -f this-file.yaml
+#
+# List namespaces:
+#   kubectl get namespaces
+#   kubectl get ns
+#
+# Switch default namespace:
+#   kubectl config set-context --current --namespace=production
+#
+# Deploy to specific namespace:
+#   kubectl apply -f app.yaml -n production
+#
+# View resources in namespace:
+#   kubectl get all -n production
+#   kubectl get pods,svc,deploy -n production
+#
+# Cross-namespace service discovery:
+#   service-name.namespace-name.svc.cluster.local
+#   Example: api-service.backend-team.svc.cluster.local
+#
+# Delete namespace (WARNING: deletes all resources):
+#   kubectl delete namespace my-team
+#
+# Check resource quotas:
+#   kubectl describe resourcequota -n limited-resources
+#   kubectl get resourcequota -n limited-resources
+#
+# ====================================================================
