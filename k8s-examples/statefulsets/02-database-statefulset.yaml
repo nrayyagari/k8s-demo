@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:13-alpine
+        image: postgres:16-alpine
         env:
         - name: POSTGRES_DB
           value: mydb

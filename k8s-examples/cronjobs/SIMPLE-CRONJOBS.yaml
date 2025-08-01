@@ -59,7 +59,7 @@ spec:
           
           containers:
           - name: backup-runner
-            image: postgres:15-alpine
+            image: postgres:16-alpine
             command: ["sh", "-c"]
             args:
             - |
