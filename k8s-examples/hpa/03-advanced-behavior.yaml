@@ -1,0 +1,226 @@
+# Advanced HPA Behavior Configuration
+# Purpose: Fine-tune scaling behavior with custom policies
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecommerce-app
+  labels:
+    app: ecommerce-app
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: ecommerce-app
+  template:
+    metadata:
+      labels:
+        app: ecommerce-app
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1
+            memory: 1Gi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecommerce-service
+spec:
+  selector:
+    app: ecommerce-app
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# Advanced HPA with custom scaling behavior
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ecommerce-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ecommerce-app
+  minReplicas: 5            # Baseline for high availability
+  maxReplicas: 50           # Handle major traffic spikes
+  
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 65
+  
+  # Advanced scaling behavior policies
+  behavior:
+    # Scale UP behavior
+    scaleUp:
+      # Stabilization window - wait this long after metrics change before scaling
+      stabilizationWindowSeconds: 60
+      
+      # Scaling policies - multiple policies, most permissive wins
+      policies:
+      # Policy 1: Percentage-based scaling
+      - type: Percent
+        value: 100          # Max 100% increase (double the pods)
+        periodSeconds: 60   # Per 60-second period
+      
+      # Policy 2: Absolute pod count
+      - type: Pods
+        value: 8            # Max 8 new pods per period
+        periodSeconds: 60
+      
+      # Policy 3: Conservative for large deployments
+      - type: Percent
+        value: 25           # Max 25% increase for larger deployments
+        periodSeconds: 30   # More frequent but smaller increases
+      
+      # Select which policy to use when multiple apply
+      selectPolicy: Max     # Use the most aggressive (Max) policy
+      
+    # Scale DOWN behavior  
+    scaleDown:
+      # Longer stabilization for scale down (avoid thrashing)
+      stabilizationWindowSeconds: 300   # 5 minutes
+      
+      policies:
+      # Conservative scale down
+      - type: Percent
+        value: 10           # Max 10% decrease per period
+        periodSeconds: 60
+      
+      # Absolute limit on pod removal
+      - type: Pods
+        value: 2            # Max 2 pods removed per period
+        periodSeconds: 60
+      
+      # Emergency scale down (very low CPU)
+      - type: Percent
+        value: 25           # Max 25% for very low utilization
+        periodSeconds: 120  # Longer period for emergency scaling
+      
+      selectPolicy: Min     # Use the most conservative (Min) policy
+
+# SCALING BEHAVIOR EXPLANATION:
+
+# Default HPA Behavior (without custom behavior):
+# - Scale up: Aggressive, can double replicas immediately
+# - Scale down: Conservative, 5-minute stabilization window
+# - No fine control over scaling rate
+
+# Custom Behavior Benefits:
+# 1. PREDICTABLE SCALING: Control exactly how fast scaling happens
+# 2. COST CONTROL: Prevent runaway scaling costs
+# 3. STABILITY: Avoid rapid oscillation between scale up/down
+# 4. BUSINESS ALIGNMENT: Match scaling to business requirements
+
+# REAL-WORLD SCENARIOS:
+
+# Scenario 1: Flash Sale Event
+# - Traffic can spike 10x instantly
+# - Need aggressive scale up (100% increase allowed)
+# - Conservative scale down (keep capacity during sale)
+
+# Scenario 2: Regular Business Hours
+# - Gradual traffic increases
+# - Moderate scale up (25% increases)
+# - Balanced scale down (10% decreases)
+
+# Scenario 3: News/Social Media Viral Event
+# - Unpredictable massive spikes
+# - Very aggressive scale up (100% + absolute pod limits)
+# - Slow scale down (maintain capacity for continued interest)
+
+# POLICY SELECTION STRATEGIES:
+
+# selectPolicy: Max (Scale Up)
+# - Uses the policy that allows the MOST scaling
+# - Good for performance-critical applications
+# - May increase costs but ensures performance
+
+# selectPolicy: Min (Scale Down)  
+# - Uses the policy that allows the LEAST scaling
+# - Good for cost control and stability
+# - May impact performance but controls costs
+
+# selectPolicy: Disabled
+# - Disables scaling completely in that direction
+# - Use when you want manual control
+
+# TESTING CUSTOM BEHAVIOR:
+
+# 1. Deploy the configuration
+# kubectl apply -f 03-advanced-behavior.yaml
+
+# 2. Monitor current state
+# kubectl get hpa ecommerce-hpa -o wide
+# kubectl describe hpa ecommerce-hpa
+
+# 3. Generate gradual load increase
+# for i in {1..10}; do
+#   kubectl run load-$i --image=busybox --restart=Never -- /bin/sh -c "while true; do wget -q -O- http://ecommerce-service; done" &
+#   sleep 30  # Add load gradually
+# done
+
+# 4. Watch scaling behavior
+# kubectl get hpa --watch
+# kubectl get pods --watch
+
+# 5. Observe scaling events
+# kubectl get events --field-selector involvedObject.name=ecommerce-hpa
+
+# PRODUCTION TUNING:
+
+# For E-commerce Sites:
+# - Aggressive scale up during known sale periods
+# - Conservative scale down to handle browsing after purchases
+# - Higher minimum replicas during business hours
+
+# For API Services:
+# - Moderate scale up (avoid overwhelming downstream services)
+# - Quick scale down (cost optimization)
+# - Focus on stabilization windows
+
+# For Batch Processing:
+# - Slow scale up (jobs can wait slightly)
+# - Quick scale down (jobs complete, free resources)
+# - Large stabilization windows
+
+# COMMON ISSUES AND SOLUTIONS:
+
+# Issue: Scaling too aggressively
+# Solution: Decrease percentage values, increase stabilization windows
+
+# Issue: Not scaling fast enough during emergencies
+# Solution: Add more permissive policies with shorter periods
+
+# Issue: Constant scaling up/down (thrashing)
+# Solution: Increase stabilization windows, use Min selectPolicy for scale down
+
+# Issue: Expensive scaling during low-priority times
+# Solution: Use different HPAs for different time periods, or external scaling solutions

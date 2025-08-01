@@ -1,0 +1,215 @@
+# VPA Recommendation-Only Mode
+# Purpose: Analyze resource usage without automatically changing anything
+
+# Application to analyze
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analysis-app
+  labels:
+    app: analysis-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analysis-app
+  template:
+    metadata:
+      labels:
+        app: analysis-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        # Current resource allocation (possibly wrong-sized)
+        resources:
+          requests:
+            cpu: 500m      # Maybe too high?
+            memory: 1Gi    # Maybe too high?
+          limits:
+            cpu: 2         # Maybe too high?
+            memory: 4Gi    # Maybe too high?
+        env:
+        - name: WORKLOAD_TYPE
+          value: "variable"  # Simulate variable resource usage
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analysis-service
+spec:
+  selector:
+    app: analysis-app
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# VPA in "Off" mode - provides recommendations without changes
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: analysis-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: analysis-app
+  
+  # "Off" mode: Only analyze and recommend, don't change anything
+  updatePolicy:
+    updateMode: "Off"
+  
+  # Optional: Set boundaries for recommendations
+  resourcePolicy:
+    containerPolicies:
+    - containerName: app
+      minAllowed:
+        cpu: 50m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 4
+        memory: 8Gi
+
+# WHY USE "OFF" MODE:
+
+# 1. SAFE ANALYSIS: Learn without risk
+# - No pod restarts or service disruption
+# - Observe VPA recommendations over time
+# - Make informed decisions about resource allocation
+
+# 2. CAPACITY PLANNING: Understand real resource needs
+# - See how much CPU/memory applications actually use
+# - Plan node capacity based on actual usage
+# - Optimize costs without guessing
+
+# 3. VALIDATION: Test VPA recommendations
+# - Compare VPA suggestions with your expectations
+# - Validate recommendations make sense
+# - Build confidence before enabling auto mode
+
+# ANALYSIS WORKFLOW:
+
+# Week 1: Deploy in "Off" mode
+# kubectl apply -f 02-recommendation-only.yaml
+
+# Week 2-3: Monitor and collect data
+# kubectl describe vpa analysis-vpa
+# kubectl get vpa analysis-vpa -o yaml | grep -A 20 recommendation
+
+# Week 4: Analyze recommendations
+# - Compare current allocation vs VPA target
+# - Decide if recommendations make sense
+# - Plan resource adjustments
+
+# Option A: Manual adjustment
+# Edit deployment resources based on VPA recommendations
+# kubectl edit deployment analysis-app
+
+# Option B: Switch to Initial mode
+# kubectl patch vpa analysis-vpa -p '{"spec":{"updatePolicy":{"updateMode":"Initial"}}}'
+
+# Option C: Switch to Auto mode (if confident)
+# kubectl patch vpa analysis-vpa -p '{"spec":{"updatePolicy":{"updateMode":"Auto"}}}'
+
+# READING VPA RECOMMENDATIONS:
+
+# Get detailed VPA information:
+# kubectl describe vpa analysis-vpa
+
+# Sample output interpretation:
+# Recommendation:
+#   Container Recommendations:
+#     Container Name:  app
+#     Lower Bound:     # Minimum resources needed
+#       Cpu:     100m
+#       Memory:  256Mi
+#     Target:          # Optimal recommendation  
+#       Cpu:     300m
+#       Memory:  512Mi
+#     Upper Bound:     # Maximum beneficial resources
+#       Cpu:     500m
+#       Memory:  1Gi
+
+# ANALYSIS QUESTIONS TO ASK:
+
+# 1. Resource Waste Analysis:
+# - Current allocation: 500m CPU, 1Gi memory
+# - VPA target: 300m CPU, 512Mi memory  
+# - Waste: 200m CPU (40%), 512Mi memory (50%)
+# - Action: Reduce resource allocation
+
+# 2. Resource Shortage Analysis:
+# - Current allocation: 100m CPU, 128Mi memory
+# - VPA target: 300m CPU, 512Mi memory
+# - Shortage: 200m CPU, 384Mi memory
+# - Action: Increase resource allocation
+
+# 3. Cost Impact Analysis:
+# - Current cost: $X per month
+# - Optimized cost: $Y per month (based on VPA target)
+# - Savings: $(X-Y) per month
+# - Action: Implement VPA recommendations
+
+# MONITORING COMMANDS:
+
+# Check VPA status:
+# kubectl get vpa analysis-vpa
+
+# View recommendations:
+# kubectl describe vpa analysis-vpa
+
+# Get recommendation JSON for analysis:
+# kubectl get vpa analysis-vpa -o jsonpath='{.status.recommendation}' | jq .
+
+# Compare current vs recommended resources:
+# echo "Current Resources:"
+# kubectl get deployment analysis-app -o jsonpath='{.spec.template.spec.containers[0].resources}' | jq .
+# echo "VPA Recommendations:"  
+# kubectl get vpa analysis-vpa -o jsonpath='{.status.recommendation.containerRecommendations[0]}' | jq .
+
+# PRODUCTION ANALYSIS SCENARIOS:
+
+# Scenario 1: Over-provisioned Application
+# Current: 2 CPU, 4Gi memory
+# VPA Target: 500m CPU, 1Gi memory
+# Result: 75% cost reduction possible
+# Action: Implement VPA recommendations
+
+# Scenario 2: Under-provisioned Application  
+# Current: 100m CPU, 256Mi memory
+# VPA Target: 1 CPU, 2Gi memory
+# Result: Performance improvement needed
+# Action: Increase resources or investigate high usage
+
+# Scenario 3: Well-tuned Application
+# Current: 500m CPU, 1Gi memory
+# VPA Target: 450m CPU, 900Mi memory
+# Result: Minor optimization possible
+# Action: Consider leaving as-is (small benefit vs complexity)
+
+# AUTOMATED ANALYSIS SCRIPT:
+# Create a script to compare all deployments:
+#
+# #!/bin/bash
+# for deployment in $(kubectl get deployments -o name); do
+#   echo "=== $deployment ==="
+#   kubectl get $deployment -o jsonpath='{.spec.template.spec.containers[0].resources}' | jq .
+#   vpa_name="${deployment##*/}-vpa"
+#   if kubectl get vpa $vpa_name >/dev/null 2>&1; then
+#     kubectl get vpa $vpa_name -o jsonpath='{.status.recommendation.containerRecommendations[0]}' | jq .
+#   else
+#     echo "No VPA found for $deployment"
+#   fi
+#   echo ""
+# done
+
+# NEXT STEPS AFTER ANALYSIS:
+# 1. Document findings and recommendations
+# 2. Create resource optimization plan
+# 3. Test changes in staging environment
+# 4. Implement changes gradually in production
+# 5. Monitor impact on performance and costs

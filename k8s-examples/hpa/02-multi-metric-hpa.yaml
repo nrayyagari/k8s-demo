@@ -1,0 +1,172 @@
+# Multi-Metric HPA Example
+# Purpose: Scale based on both CPU and memory utilization
+
+# Application deployment with proper resource specifications
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  labels:
+    app: api-server
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 200m        # Baseline CPU requirement
+            memory: 256Mi    # Baseline memory requirement
+          limits:
+            cpu: 1           # Burst capacity
+            memory: 1Gi      # Memory ceiling
+        env:
+        - name: CACHE_SIZE
+          value: "200MB"     # Memory-intensive operation
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server-service
+spec:
+  selector:
+    app: api-server
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# HPA with multiple metrics (OR condition)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-server-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-server
+  minReplicas: 3
+  maxReplicas: 15
+  
+  # Multiple metrics - scale if ANY condition is met
+  metrics:
+  # Scale if CPU utilization > 60%
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  
+  # Scale if memory utilization > 75%
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 75
+
+# MULTI-METRIC BEHAVIOR:
+# HPA evaluates ALL metrics and uses the one that suggests the HIGHEST replica count
+# 
+# Example 1:
+# - CPU: 80% → suggests 4 replicas (3 * 80/60 = 4)
+# - Memory: 50% → suggests 2 replicas (3 * 50/75 = 2)
+# - Result: Scale to 4 replicas (higher of the two)
+#
+# Example 2:
+# - CPU: 40% → suggests 2 replicas (3 * 40/60 = 2)
+# - Memory: 90% → suggests 4 replicas (3 * 90/75 = 3.6 ≈ 4)
+# - Result: Scale to 4 replicas (memory is the constraint)
+
+# WHY USE MULTIPLE METRICS:
+# 1. Applications with different bottlenecks:
+#    - CPU-bound: Image processing, calculations
+#    - Memory-bound: Caching, data processing
+#    - Mixed workloads: Web apps with caching
+#
+# 2. Better responsiveness:
+#    - CPU spikes quickly → immediate scaling
+#    - Memory grows slowly → gradual scaling
+#    - Cover both scenarios
+#
+# 3. Resource efficiency:
+#    - Prevent CPU throttling
+#    - Prevent OOM kills
+#    - Maintain performance
+
+# TESTING DIFFERENT LOAD PATTERNS:
+# CPU load test:
+# kubectl run cpu-load --image=busybox --restart=Never -- /bin/sh -c "while true; do yes > /dev/null; done"
+#
+# Memory load test (simulated):
+# kubectl run memory-load --image=stress --restart=Never -- stress --vm 1 --vm-bytes 512M --timeout 300s
+#
+# Combined load test:
+# kubectl run mixed-load --image=busybox --restart=Never -- /bin/sh -c "while true; do wget -q -O- http://api-server-service & yes > /dev/null & wait; done"
+
+# MONITORING COMMANDS:
+# kubectl get hpa api-server-hpa -o wide
+# kubectl describe hpa api-server-hpa
+# kubectl top pods -l app=api-server
+
+# PRODUCTION CONSIDERATIONS:
+# 1. Memory scaling is more dangerous than CPU:
+#    - Memory cannot be throttled like CPU
+#    - OOM kills cause service disruption
+#    - Set memory targets higher (75-80%)
+#
+# 2. Monitor actual usage patterns:
+#    - Use kubectl top pods over time
+#    - Analyze Prometheus metrics if available
+#    - Adjust targets based on real behavior
+#
+# 3. Different workload patterns:
+#    - Morning: CPU-bound (processing overnight data)
+#    - Afternoon: Memory-bound (user sessions accumulate)
+#    - Evening: Mixed load (peak usage)
+
+# ADVANCED METRICS (requires custom metrics API):
+# - type: Pods
+#   pods:
+#     metric:
+#       name: active_connections
+#     target:
+#       type: AverageValue
+#       averageValue: "100"
+#
+# - type: Object
+#   object:
+#     metric:
+#       name: queue_depth
+#     describedObject:
+#       apiVersion: v1
+#       kind: Service
+#       name: message-queue
+#     target:
+#       type: Value
+#       value: "50"

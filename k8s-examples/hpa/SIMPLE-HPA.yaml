@@ -1,0 +1,103 @@
+# SIMPLE HPA - Quick Start Guide
+# Purpose: Minimal working example to get started with horizontal pod autoscaling
+
+# Step 1: App with resource requests (REQUIRED!)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: simple-app
+  template:
+    metadata:
+      labels:
+        app: simple-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: 100m        # MUST HAVE for HPA to work
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+
+---
+# Step 2: Service to expose app
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-app-service
+spec:
+  selector:
+    app: simple-app
+  ports:
+  - port: 80
+
+---
+# Step 3: HPA to scale automatically  
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: simple-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: simple-app
+  minReplicas: 2            # Never less than 2
+  maxReplicas: 6            # Never more than 6  
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70    # Scale when CPU > 70%
+
+# QUICK COMMANDS:
+
+# 1. Check if metrics server is installed:
+#    kubectl top nodes
+#    (If error, install: kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml)
+
+# 2. Deploy everything:
+#    kubectl apply -f SIMPLE-HPA.yaml
+
+# 3. Check status:
+#    kubectl get hpa
+#    kubectl get pods
+
+# 4. Test scaling (generate CPU load):
+#    kubectl run load-test --image=busybox --restart=Never -- /bin/sh -c "while true; do wget -q -O- http://simple-app-service; done"
+
+# 5. Watch scaling happen:
+#    kubectl get hpa --watch
+#    kubectl get pods --watch
+
+# 6. Clean up test:
+#    kubectl delete pod load-test
+
+# WHAT HAPPENS:
+# ✅ Normal load: 2 pods at ~30% CPU → No scaling
+# ✅ High load: CPU rises to 80% → HPA adds pods → CPU drops back to ~70%
+# ✅ Low load: CPU drops to 20% → HPA waits 5min → Removes extra pods
+# ✅ Cost optimization: Only pay for what you need
+# ✅ Performance: Handle traffic spikes automatically
+
+# TROUBLESHOOTING:
+# - HPA shows "unknown" metrics → Install metrics-server
+# - No scaling happens → Check resource requests are set
+# - Scaling too slow → Lower target utilization (50-60%)
+# - Scaling too fast → Raise target utilization (80-90%)
+
+# NEXT STEPS:
+# - Look at other examples for advanced features
+# - Add memory-based scaling
+# - Customize scaling behavior
+# - Set up monitoring and alerts

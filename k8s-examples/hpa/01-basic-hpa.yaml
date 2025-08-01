@@ -1,0 +1,113 @@
+# Basic HPA Example - CPU-Based Scaling
+# Purpose: Simple horizontal pod autoscaling based on CPU utilization
+
+# Step 1: Application with resource requests (required for HPA)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  labels:
+    app: web-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 100m        # HPA needs this to calculate percentages
+            memory: 128Mi    # Good practice to include memory
+          limits:
+            cpu: 500m        # Prevent CPU monopolization
+            memory: 256Mi    # Prevent memory leaks
+        # Basic health checks
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Step 2: Service to expose the application
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-service
+spec:
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Step 3: HPA configuration
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-app-hpa
+spec:
+  # Target deployment to scale
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-app
+  
+  # Replica boundaries
+  minReplicas: 2            # Minimum for availability
+  maxReplicas: 8            # Maximum for cost control
+  
+  # Scaling metrics
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70    # Scale when average CPU > 70%
+
+# HOW IT WORKS:
+# 1. HPA monitors CPU usage every 15 seconds
+# 2. When average CPU > 70%, it calculates: currentReplicas * (currentCPU / targetCPU)
+# 3. If result > current replicas, it scales up
+# 4. If result < current replicas (and CPU < 70%), it scales down after delay
+# 5. New pods get traffic only after passing readiness probe
+
+# EXAMPLE SCALING SCENARIO:
+# Initial: 2 pods at 40% CPU each → No action (below 70% target)
+# Load increases: 2 pods at 90% CPU each → Scale up to 3 pods (90/70 = 1.3x)
+# After scaling: 3 pods at 60% CPU each → Stable (below 70% target)
+# Load decreases: 3 pods at 30% CPU each → Scale down to 2 pods after 5 min
+
+# TESTING COMMANDS:
+# 1. Deploy: kubectl apply -f 01-basic-hpa.yaml
+# 2. Check status: kubectl get hpa web-app-hpa
+# 3. Generate load: kubectl run load-test --image=busybox --restart=Never -- /bin/sh -c "while true; do wget -q -O- http://web-app-service; done"
+# 4. Watch scaling: kubectl get hpa --watch
+# 5. Monitor pods: kubectl get pods --watch
+# 6. Clean up: kubectl delete pod load-test
+
+# PRODUCTION TIPS:
+# - Start with conservative targets (60-70% CPU)
+# - Ensure applications start quickly (<30 seconds)
+# - Set reasonable max replicas to control costs
+# - Monitor actual resource usage to tune requests
+# - Use readiness probes to prevent traffic to unready pods

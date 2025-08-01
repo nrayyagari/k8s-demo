@@ -1,0 +1,186 @@
+# Basic VPA Example - Automatic Resource Right-Sizing
+# Purpose: Automatically adjust container resources based on actual usage
+
+# Application that we want VPA to optimize
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+  labels:
+    app: webapp
+spec:
+  replicas: 2           # Multiple replicas to handle VPA pod restarts
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        # Initial resource guess - VPA will optimize these
+        resources:
+          requests:
+            cpu: 100m      # Starting point for VPA
+            memory: 128Mi  # Starting point for VPA
+          limits:
+            cpu: 500m      # VPA can adjust limits too
+            memory: 512Mi  # VPA can adjust limits too
+        # Health checks important for VPA pod restarts
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Service to expose the application
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+spec:
+  selector:
+    app: webapp
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# VPA configuration for automatic resource optimization
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: webapp-vpa
+spec:
+  # Target deployment to optimize
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: webapp
+  
+  # Update policy - how VPA applies recommendations
+  updatePolicy:
+    updateMode: "Auto"    # Automatically apply recommendations (restarts pods)
+    # Other options:
+    # "Off" - Only provide recommendations, don't apply
+    # "Initial" - Only apply to new pods, not existing ones
+  
+  # Resource boundaries and policies
+  resourcePolicy:
+    containerPolicies:
+    - containerName: nginx
+      # Minimum resources VPA can set
+      minAllowed:
+        cpu: 50m          # Never go below 50m CPU
+        memory: 64Mi      # Never go below 64MB memory
+      
+      # Maximum resources VPA can set
+      maxAllowed:
+        cpu: 2            # Never exceed 2 CPU cores
+        memory: 2Gi       # Never exceed 2GB memory
+      
+      # Which resources VPA controls
+      controlledResources: ["cpu", "memory"]
+      
+      # What VPA updates
+      controlledValues: RequestsAndLimits  # Update both requests and limits
+
+# HOW VPA WORKS:
+
+# 1. LEARNING PHASE (24-48 hours):
+# - VPA observes actual resource usage
+# - Builds usage patterns and statistics
+# - Calculates optimal resource recommendations
+
+# 2. RECOMMENDATION PHASE:
+# - Provides three recommendations:
+#   * lowerBound: Minimum resources needed
+#   * target: Optimal resources recommended  
+#   * upperBound: Maximum beneficial resources
+
+# 3. APPLICATION PHASE (Auto mode):
+# - Updates pod resource requests/limits
+# - Restarts pods to apply new resources
+# - Continues monitoring and adjusting
+
+# EXAMPLE SCENARIO:
+# Initial: nginx container with 100m CPU, 128Mi memory
+# After 24 hours of monitoring:
+# - VPA observes actual usage: 250m CPU, 256Mi memory
+# - VPA recommendation: 300m CPU, 320Mi memory
+# - VPA restarts pod with new resource allocation
+# - Result: Better performance, right-sized resources
+
+# TESTING COMMANDS:
+
+# 1. Check if VPA is installed:
+# kubectl get crd verticalpodautoscalers.autoscaling.k8s.io
+
+# 2. Deploy the example:
+# kubectl apply -f 01-basic-vpa.yaml
+
+# 3. Check VPA status:
+# kubectl get vpa webapp-vpa
+# kubectl describe vpa webapp-vpa
+
+# 4. View recommendations (after 24+ hours):
+# kubectl get vpa webapp-vpa -o yaml | grep -A 15 recommendation
+
+# 5. Monitor resource changes:
+# kubectl get pods -o custom-columns=NAME:.metadata.name,CPU-REQ:.spec.containers[0].resources.requests.cpu,MEM-REQ:.spec.containers[0].resources.requests.memory
+
+# 6. Generate some load to see VPA learning:
+# kubectl run load-test --image=busybox --restart=Never -- /bin/sh -c "while true; do wget -q -O- http://webapp-service; done"
+
+# WHAT TO EXPECT:
+
+# First few hours:
+# - VPA status shows "RecommendationProvided: False"  
+# - No recommendations yet (learning phase)
+
+# After 24-48 hours:
+# - VPA provides recommendations based on observed usage
+# - In Auto mode: pods restart with new resource allocation
+# - Improved resource utilization and performance
+
+# PRODUCTION CONSIDERATIONS:
+
+# 1. POD RESTARTS: Auto mode restarts pods to apply changes
+# - Ensure multiple replicas for availability
+# - Plan for brief service interruption
+# - Consider "Initial" mode for critical services
+
+# 2. RESOURCE BOUNDARIES: Set reasonable min/max limits
+# - Prevent VPA from scaling too small (performance)
+# - Prevent VPA from scaling too large (cost)
+# - Based on actual node capacity and workload needs
+
+# 3. MONITORING: Watch VPA recommendations and impacts
+# - Track resource usage before/after VPA
+# - Monitor application performance metrics
+# - Validate cost optimization results
+
+# WHEN TO USE VPA:
+# ✅ Single-replica applications (databases, caches)
+# ✅ Unknown resource requirements (new applications)
+# ✅ Batch jobs with varying resource needs
+# ✅ Development environments (cost optimization)
+
+# WHEN NOT TO USE VPA: 
+# ❌ High-availability services (restart disruption)
+# ❌ Well-tuned applications (already optimized)
+# ❌ Latency-sensitive applications (restart impact)
+# ❌ Frequently deployed applications (stale recommendations)

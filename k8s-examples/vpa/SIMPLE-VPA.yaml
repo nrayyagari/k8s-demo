@@ -1,0 +1,98 @@
+# SIMPLE VPA - Quick Start Guide  
+# Purpose: Minimal working example to get started with vertical pod autoscaling
+
+# Step 1: App that VPA will optimize
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-vpa-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simple-vpa-app
+  template:
+    metadata:
+      labels:
+        app: simple-vpa-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: 50m         # Starting point - VPA will optimize
+            memory: 64Mi     # Starting point - VPA will optimize
+
+---
+# Step 2: VPA to automatically right-size the container
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler  
+metadata:
+  name: simple-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: simple-vpa-app
+  updatePolicy:
+    updateMode: "Off"        # Start with recommendations only (safe)
+  resourcePolicy:
+    containerPolicies:
+    - containerName: nginx
+      maxAllowed:
+        cpu: 1             # Never exceed 1 CPU
+        memory: 1Gi        # Never exceed 1GB memory
+
+# QUICK COMMANDS:
+
+# 1. Check if VPA is installed:
+#    kubectl get crd verticalpodautoscalers.autoscaling.k8s.io
+#    (If missing, VPA needs to be installed - it's not included by default)
+
+# 2. Deploy everything:
+#    kubectl apply -f SIMPLE-VPA.yaml
+
+# 3. Check status (wait 24+ hours for recommendations):
+#    kubectl get vpa simple-vpa
+#    kubectl describe vpa simple-vpa
+
+# 4. View recommendations:
+#    kubectl get vpa simple-vpa -o yaml | grep -A 10 recommendation
+
+# 5. Enable automatic updates (when ready):
+#    kubectl patch vpa simple-vpa -p '{"spec":{"updatePolicy":{"updateMode":"Auto"}}}'
+
+# WHAT VPA DOES:
+# ✅ Step 1: Monitors actual CPU and memory usage for 24-48 hours
+# ✅ Step 2: Calculates optimal resource requests based on usage patterns  
+# ✅ Step 3: Provides recommendations (Off mode) or applies them (Auto mode)
+# ✅ Step 4: Right-sizes containers for optimal cost and performance
+
+# VPA RECOMMENDATION TYPES:
+# - lowerBound: Minimum resources needed (don't go below this)
+# - target: Optimal recommended resources (best choice)
+# - upperBound: Maximum beneficial resources (don't go above this)
+
+# WHEN TO USE VPA:
+# ✅ Don't know how much CPU/memory your app needs
+# ✅ Single-instance applications (databases, caches)
+# ✅ Applications with unpredictable resource usage
+# ✅ Want to optimize costs without manual tuning
+
+# WHEN NOT TO USE VPA:
+# ❌ High-availability services (VPA restarts pods)
+# ❌ Applications that scale horizontally (use HPA instead)
+# ❌ Already well-tuned resource allocations
+# ❌ Can't tolerate pod restarts
+
+# TROUBLESHOOTING:
+# - "VPA not found" → Install VPA (not included by default)
+# - "No recommendations" → Wait 24-48 hours for data collection
+# - "Recommendations seem wrong" → Check actual usage with kubectl top pods
+
+# NEXT STEPS:
+# 1. Wait 24+ hours for VPA to learn usage patterns
+# 2. Review recommendations and validate they make sense
+# 3. Switch to "Auto" mode when confident
+# 4. Monitor resource usage and application performance
