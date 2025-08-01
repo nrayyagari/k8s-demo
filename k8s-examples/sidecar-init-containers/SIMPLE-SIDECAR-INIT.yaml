@@ -1,0 +1,1028 @@
+# ====================================================================
+# SIDECAR AND INIT CONTAINERS: Extend and Prepare Your Applications
+# ====================================================================
+#
+# WHY: Applications need setup tasks and auxiliary services without modifying main code
+# SOLUTION: Init containers prepare environment, sidecar containers provide auxiliary services
+#
+# KEY POINTS:
+# - Init containers run sequentially BEFORE main containers start
+# - Sidecar containers run alongside main containers throughout pod lifecycle
+# - All containers in a pod share network namespace and can share volumes
+# - Great for separation of concerns and modular architecture
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# 1. BASIC INIT CONTAINER - Database dependency check
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-with-init
+  annotations:
+    team.company.com/owner: "backend-team"
+    pattern.company.com/type: "init-container-example"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webapp
+      pattern: init-example
+  template:
+    metadata:
+      labels:
+        app: webapp
+        pattern: init-example
+    spec:
+      # INIT CONTAINERS - Run before main containers
+      initContainers:
+      
+      # Wait for database to be ready
+      - name: wait-for-database
+        image: postgres:16-alpine
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Waiting for database to become ready..."
+          echo "Database host: $DB_HOST"
+          
+          # Keep trying until database is ready
+          until pg_isready -h $DB_HOST -p 5432 -U $DB_USER; do
+            echo "Database not ready, waiting 5 seconds..."
+            sleep 5
+          done
+          
+          echo "Database is ready! Application can start."
+        env:
+        - name: DB_HOST
+          value: "postgres.database.svc.cluster.local"
+        - name: DB_USER
+          value: "appuser"
+        - name: PGPASSWORD
+          value: "password123"  # In production, use secrets!
+        
+        # Resource limits for init containers
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+      
+      # MAIN CONTAINER - Starts after init container completes
+      containers:
+      - name: webapp
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        
+        # Environment variables for main app
+        env:
+        - name: DATABASE_URL
+          value: "postgres://appuser:password123@postgres.database.svc.cluster.local:5432/webapp"
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        # Health checks for main container
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# --------------------------------------------------------------------
+# 2. BASIC SIDECAR CONTAINER - Logging sidecar
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-with-logging-sidecar
+  annotations:
+    team.company.com/owner: "backend-team"
+    pattern.company.com/type: "sidecar-logging-example"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webapp
+      pattern: sidecar-logging
+  template:
+    metadata:
+      labels:
+        app: webapp
+        pattern: sidecar-logging
+    spec:
+      # MAIN CONTAINER and SIDECAR CONTAINER run together
+      containers:
+      
+      # Main application container
+      - name: webapp
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        
+        # Configure nginx to write logs to shared volume
+        command: ["sh", "-c"]
+        args:
+        - |
+          # Create custom nginx config that writes to shared log directory
+          cat > /etc/nginx/nginx.conf << 'EOF'
+          events {
+            worker_connections 1024;
+          }
+          http {
+            access_log /var/log/shared/access.log;
+            error_log /var/log/shared/error.log;
+            
+            server {
+              listen 80;
+              location / {
+                root /usr/share/nginx/html;
+                index index.html;
+              }
+            }
+          }
+          EOF
+          
+          # Start nginx
+          nginx -g 'daemon off;'
+        
+        # Mount shared volume for logs
+        volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log/shared
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      
+      # SIDECAR CONTAINER - Log processor/forwarder
+      - name: log-processor
+        image: busybox:1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Log processor sidecar starting..."
+          
+          # Create log files if they don't exist
+          touch /var/log/shared/access.log
+          touch /var/log/shared/error.log
+          
+          # Process logs continuously
+          while true; do
+            echo "=== $(date) ==="
+            
+            # Show recent access logs
+            echo "Recent access logs:"
+            tail -n 5 /var/log/shared/access.log || echo "No access logs yet"
+            
+            # Show recent error logs  
+            echo "Recent error logs:"
+            tail -n 5 /var/log/shared/error.log || echo "No error logs yet"
+            
+            # In production, this would forward logs to centralized logging
+            # Example: Send to Elasticsearch, Splunk, CloudWatch, etc.
+            
+            sleep 30
+          done
+        
+        # Mount same shared volume (read access to logs)
+        volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log/shared
+          readOnly: true
+        
+        # Resource limits for sidecar
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+      
+      # Shared volume for log communication
+      volumes:
+      - name: shared-logs
+        emptyDir: {}
+
+---
+# --------------------------------------------------------------------  
+# 3. MULTIPLE INIT CONTAINERS - Sequential setup tasks
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-multi-init
+  annotations:
+    team.company.com/owner: "backend-team"
+    pattern.company.com/type: "multi-init-example"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webapp
+      pattern: multi-init
+  template:
+    metadata:
+      labels:
+        app: webapp
+        pattern: multi-init
+    spec:
+      # MULTIPLE INIT CONTAINERS - Run in sequence
+      initContainers:
+      
+      # Step 1: Check external API dependency
+      - name: check-api-dependency
+        image: curlimages/curl:8.0.1
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Step 1: Checking external API dependency..."
+          
+          # Try to reach external API
+          for i in $(seq 1 10); do
+            if curl -f -s --connect-timeout 5 "$API_ENDPOINT/health" > /dev/null; then
+              echo "External API is reachable!"
+              exit 0
+            fi
+            echo "Attempt $i/10: API not reachable, waiting..."
+            sleep 10
+          done
+          
+          echo "ERROR: External API is not reachable after 10 attempts"
+          exit 1
+        env:
+        - name: API_ENDPOINT
+          value: "https://jsonplaceholder.typicode.com"  # Example API for demo
+        
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "25m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+      
+      # Step 2: Generate configuration files
+      - name: generate-config
+        image: busybox:1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Step 2: Generating application configuration..."
+          
+          # Create application config directory
+          mkdir -p /shared-config/app
+          
+          # Generate main application config
+          cat > /shared-config/app/config.yaml << EOF
+          app:
+            name: webapp
+            version: 1.0.0
+            port: 8080
+          
+          database:
+            host: postgres.database.svc.cluster.local
+            port: 5432
+            name: webapp
+            user: appuser
+          
+          external_api:
+            url: $API_ENDPOINT
+            timeout: 30s
+            retries: 3
+          
+          logging:
+            level: info
+            format: json
+          EOF
+          
+          # Generate environment-specific config
+          cat > /shared-config/app/env.conf << EOF
+          ENVIRONMENT=production
+          DEBUG=false
+          LOG_LEVEL=info
+          MAX_CONNECTIONS=100
+          TIMEOUT=30
+          EOF
+          
+          echo "Configuration files generated:"
+          ls -la /shared-config/app/
+          
+          echo "Step 2 completed successfully!"
+        env:
+        - name: API_ENDPOINT
+          value: "https://jsonplaceholder.typicode.com"
+        
+        # Mount shared volume to write config
+        volumeMounts:
+        - name: shared-config
+          mountPath: /shared-config
+        
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "25m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+      
+      # Step 3: Validate configuration
+      - name: validate-config
+        image: alpine:3.18
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Step 3: Validating generated configuration..."
+          
+          # Install YAML validator
+          apk add --no-cache yq
+          
+          # Validate YAML syntax
+          if ! yq eval '.app.name' /shared-config/app/config.yaml > /dev/null; then
+            echo "ERROR: Invalid YAML in config.yaml"
+            exit 1
+          fi
+          
+          # Check required configuration values
+          APP_NAME=$(yq eval '.app.name' /shared-config/app/config.yaml)
+          DB_HOST=$(yq eval '.database.host' /shared-config/app/config.yaml)
+          
+          if [ "$APP_NAME" = "null" ] || [ -z "$APP_NAME" ]; then
+            echo "ERROR: app.name is missing from configuration"
+            exit 1
+          fi
+          
+          if [ "$DB_HOST" = "null" ] || [ -z "$DB_HOST" ]; then
+            echo "ERROR: database.host is missing from configuration"
+            exit 1
+          fi
+          
+          # Validate environment config
+          if [ ! -f /shared-config/app/env.conf ]; then
+            echo "ERROR: env.conf file is missing"
+            exit 1
+          fi
+          
+          echo "Configuration validation passed!"
+          echo "App name: $APP_NAME"
+          echo "Database host: $DB_HOST"
+          echo "Step 3 completed successfully!"
+        
+        # Mount shared volume to read config
+        volumeMounts:
+        - name: shared-config
+          mountPath: /shared-config
+          readOnly: true
+        
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+      
+      # MAIN CONTAINER - Starts after ALL init containers complete
+      containers:
+      - name: webapp
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        
+        # Show that config is available
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Main application starting..."
+          echo "Available configuration files:"
+          ls -la /etc/app-config/
+          
+          echo "Configuration content:"
+          cat /etc/app-config/config.yaml
+          echo "---"
+          cat /etc/app-config/env.conf
+          
+          # Start nginx
+          echo "Starting nginx..."
+          nginx -g 'daemon off;'
+        
+        # Mount config generated by init containers
+        volumeMounts:
+        - name: shared-config
+          mountPath: /etc/app-config
+          readOnly: true
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      
+      # Shared volume for configuration
+      volumes:
+      - name: shared-config
+        emptyDir: {}
+
+---
+# --------------------------------------------------------------------
+# 4. MULTIPLE SIDECAR CONTAINERS - Monitoring and logging
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-multi-sidecar
+  annotations:
+    team.company.com/owner: "platform-team"
+    pattern.company.com/type: "multi-sidecar-example"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webapp
+      pattern: multi-sidecar
+  template:
+    metadata:
+      labels:
+        app: webapp
+        pattern: multi-sidecar
+    spec:
+      # MULTIPLE CONTAINERS - Main app + multiple sidecars
+      containers:
+      
+      # Main application container
+      - name: webapp
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        - containerPort: 8080
+          name: status
+        
+        # Custom config with status endpoint and logging
+        command: ["sh", "-c"]
+        args:
+        - |
+          # Create nginx config with status endpoint
+          cat > /etc/nginx/nginx.conf << 'EOF'
+          events {
+            worker_connections 1024;
+          }
+          http {
+            access_log /var/log/shared/access.log;
+            error_log /var/log/shared/error.log;
+            
+            server {
+              listen 80;
+              location / {
+                root /usr/share/nginx/html;
+                index index.html;
+              }
+            }
+            
+            server {
+              listen 8080;
+              location /status {
+                stub_status on;
+                access_log off;
+              }
+            }
+          }
+          EOF
+          
+          # Create custom index page
+          cat > /usr/share/nginx/html/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head><title>Multi-Sidecar Demo</title></head>
+          <body>
+            <h1>Hello from Multi-Sidecar Pod!</h1>
+            <p>This application has multiple sidecar containers:</p>
+            <ul>
+              <li>Log processor sidecar</li>
+              <li>Metrics exporter sidecar</li>
+              <li>Health checker sidecar</li>
+            </ul>
+            <p>Check status at <a href=":8080/status">/status</a></p>
+          </body>
+          </html>
+          EOF
+          
+          nginx -g 'daemon off;'
+        
+        volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log/shared
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      
+      # SIDECAR 1 - Log processor
+      - name: log-processor
+        image: busybox:1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Log processor sidecar starting..."
+          
+          while true; do
+            # Create log files if they don't exist
+            touch /var/log/shared/access.log /var/log/shared/error.log
+            
+            # Process and display log statistics
+            ACCESS_LINES=$(wc -l < /var/log/shared/access.log || echo 0)
+            ERROR_LINES=$(wc -l < /var/log/shared/error.log || echo 0)
+            
+            echo "[LOG-PROCESSOR] $(date): Access logs: $ACCESS_LINES lines, Error logs: $ERROR_LINES lines"
+            
+            # In production: forward logs to centralized system
+            sleep 60
+          done
+        
+        volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log/shared
+          readOnly: true
+        
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "25m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+      
+      # SIDECAR 2 - Metrics exporter  
+      - name: metrics-exporter
+        image: curlimages/curl:8.0.1
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Metrics exporter sidecar starting..."
+          
+          while true; do
+            # Collect metrics from main application
+            if METRICS=$(curl -s http://localhost:8080/status 2>/dev/null); then
+              echo "[METRICS-EXPORTER] $(date): Nginx status collected"
+              
+              # Parse basic metrics (in production, would export to Prometheus)
+              ACTIVE_CONNECTIONS=$(echo "$METRICS" | grep "Active connections:" | awk '{print $3}' || echo "0")
+              echo "[METRICS-EXPORTER] Active connections: $ACTIVE_CONNECTIONS"
+              
+              # In production: expose metrics on dedicated port for Prometheus
+            else
+              echo "[METRICS-EXPORTER] $(date): Failed to collect metrics"
+            fi
+            
+            sleep 30
+          done
+        
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "25m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+      
+      # SIDECAR 3 - Health checker
+      - name: health-checker
+        image: curlimages/curl:8.0.1
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Health checker sidecar starting..."
+          
+          while true; do
+            # Check main application health
+            if curl -f -s http://localhost:80/ > /dev/null; then
+              echo "[HEALTH-CHECKER] $(date): Application is healthy"
+              HEALTH_STATUS="healthy"
+            else
+              echo "[HEALTH-CHECKER] $(date): Application is unhealthy!"
+              HEALTH_STATUS="unhealthy"
+            fi
+            
+            # Write health status to shared location
+            echo "$HEALTH_STATUS" > /var/shared/health-status
+            echo "$(date): $HEALTH_STATUS" >> /var/shared/health-history
+            
+            # In production: report to external monitoring system
+            sleep 15
+          done
+        
+        volumeMounts:
+        - name: shared-status
+          mountPath: /var/shared
+        
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "25m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+      
+      # Shared volumes for inter-container communication
+      volumes:
+      - name: shared-logs
+        emptyDir: {}
+      - name: shared-status
+        emptyDir: {}
+
+---
+# --------------------------------------------------------------------
+# 5. COMBINED INIT + SIDECAR PATTERN - Complete production setup
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: production-webapp
+  annotations:
+    team.company.com/owner: "backend-team"
+    pattern.company.com/type: "init-plus-sidecar-example"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: production-webapp
+      pattern: init-plus-sidecar
+  template:
+    metadata:
+      labels:
+        app: production-webapp
+        pattern: init-plus-sidecar
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      # INIT CONTAINER - Setup phase
+      initContainers:
+      - name: setup-environment
+        image: alpine:3.18
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Setting up production environment..."
+          
+          # Install required tools
+          apk add --no-cache curl
+          
+          # Check all dependencies
+          echo "Checking database..."
+          # In production: actual database health check
+          sleep 2
+          
+          echo "Checking cache service..."
+          # In production: Redis/Memcached health check  
+          sleep 2
+          
+          echo "Downloading application configuration..."
+          # In production: fetch from config service or vault
+          mkdir -p /shared-config
+          cat > /shared-config/app.json << EOF
+          {
+            "environment": "production",
+            "database": {
+              "host": "postgres.database.svc.cluster.local",
+              "port": 5432,
+              "ssl": true
+            },
+            "cache": {
+              "host": "redis.cache.svc.cluster.local",
+              "port": 6379
+            },
+            "monitoring": {
+              "metrics_port": 9090,
+              "health_check_interval": "30s"
+            }
+          }
+          EOF
+          
+          echo "Environment setup completed successfully!"
+        
+        volumeMounts:
+        - name: shared-config  
+          mountPath: /shared-config
+        
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+      
+      # MAIN CONTAINERS - Application + sidecars
+      containers:
+      
+      # Main application
+      - name: webapp
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        
+        env:
+        - name: CONFIG_PATH
+          value: "/etc/app-config/app.json"
+        
+        volumeMounts:
+        - name: shared-config
+          mountPath: /etc/app-config
+          readOnly: true
+        - name: shared-data
+          mountPath: /var/shared
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      
+      # Monitoring sidecar
+      - name: monitor
+        image: prom/node-exporter:v1.6.0
+        ports:
+        - containerPort: 9100
+          name: metrics
+        args:
+        - "--web.listen-address=0.0.0.0:9100"
+        - "--path.procfs=/host/proc"  
+        - "--path.sysfs=/host/sys"
+        
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+      
+      # Log aggregation sidecar
+      - name: log-aggregator
+        image: busybox:1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Starting log aggregator..."
+          
+          while true; do
+            # Collect application logs and metrics
+            echo "[$(date)] Log aggregator running" >> /var/shared/aggregator.log
+            
+            # In production: 
+            # - Collect logs from multiple sources
+            # - Format and forward to centralized logging
+            # - Handle log rotation and compression
+            
+            sleep 60
+          done
+        
+        volumeMounts:
+        - name: shared-data
+          mountPath: /var/shared
+        
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "25m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+      
+      # Shared volumes
+      volumes:
+      - name: shared-config
+        emptyDir: {}
+      - name: shared-data
+        emptyDir: {}
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+
+---
+# ====================================================================
+# SERVICES FOR EXAMPLES
+# ====================================================================
+
+# Service for basic init example
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-init-service
+  labels:
+    pattern: init-container
+spec:
+  selector:
+    app: webapp
+    pattern: init-example
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Service for sidecar logging example
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-sidecar-service
+  labels:
+    pattern: sidecar-logging
+spec:
+  selector:
+    app: webapp
+    pattern: sidecar-logging
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Service for multi-sidecar example
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-multi-sidecar-service
+  labels:
+    pattern: multi-sidecar
+spec:
+  selector:
+    app: webapp
+    pattern: multi-sidecar
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: status
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Service for production example
+apiVersion: v1
+kind: Service
+metadata:
+  name: production-webapp-service
+  labels:
+    pattern: production
+spec:
+  selector:
+    app: production-webapp
+    pattern: init-plus-sidecar
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: metrics
+    port: 9100
+    targetPort: 9100
+  type: ClusterIP
+
+---
+# ====================================================================
+# TESTING AND VERIFICATION COMMANDS
+# ====================================================================
+#
+# After applying these resources, test with these commands:
+#
+# CHECK POD STATUS AND INIT CONTAINER EXECUTION:
+# kubectl get pods -l pattern=init-example -w
+# kubectl describe pod <pod-name>
+#
+# VIEW INIT CONTAINER LOGS:
+# kubectl logs <pod-name> -c wait-for-database
+# kubectl logs <pod-name> -c check-api-dependency
+# kubectl logs <pod-name> -c generate-config
+# kubectl logs <pod-name> -c validate-config
+#
+# VIEW SIDECAR CONTAINER LOGS:
+# kubectl logs <pod-name> -c log-processor -f
+# kubectl logs <pod-name> -c metrics-exporter -f
+# kubectl logs <pod-name> -c health-checker -f
+#
+# VIEW ALL CONTAINER LOGS:
+# kubectl logs <pod-name> --all-containers=true
+#
+# CHECK SHARED VOLUMES:
+# kubectl exec <pod-name> -c webapp -- ls -la /etc/app-config/
+# kubectl exec <pod-name> -c webapp -- cat /etc/app-config/config.yaml
+# kubectl exec <pod-name> -c log-processor -- ls -la /var/log/shared/
+#
+# TEST SERVICES:
+# kubectl port-forward service/webapp-init-service 8080:80
+# kubectl port-forward service/webapp-multi-sidecar-service 8080:80
+# curl http://localhost:8080
+#
+# MONITOR CONTAINER RESOURCE USAGE:
+# kubectl top pod <pod-name> --containers
+#
+# ====================================================================
+
+# KEY LEARNING POINTS:
+#
+# 1. INIT CONTAINER EXECUTION:
+#    - Run sequentially in the order defined
+#    - Must complete successfully before main containers start
+#    - Perfect for setup tasks, dependency checks, configuration
+#
+# 2. SIDECAR CONTAINER PATTERNS:
+#    - Run alongside main application throughout pod lifetime
+#    - Share network namespace (communicate via localhost)
+#    - Share volumes for file-based communication
+#    - Handle cross-cutting concerns (logging, monitoring, security)
+#
+# 3. CONTAINER COMMUNICATION:
+#    - Network: All containers share pod IP (localhost communication)
+#    - Storage: Use shared volumes (emptyDir, configMap, secret)
+#    - Process: Shared process namespace (optional)
+#    - Environment: Can share environment variables
+#
+# 4. RESOURCE MANAGEMENT:
+#    - Set resource limits for all containers (init + main + sidecars)
+#    - Consider cumulative resource usage for pod scheduling
+#    - Init containers use resources temporarily
+#    - Sidecars use resources throughout pod lifecycle
+#
+# 5. LIFECYCLE MANAGEMENT:
+#    - Init containers block pod startup if they fail
+#    - Sidecar failures can restart independently
+#    - Graceful shutdown affects all containers
+#    - Health checks apply to individual containers
+#
+# 6. OPERATIONAL CONSIDERATIONS:
+#    - Debug container issues individually
+#    - Monitor resource usage across all containers  
+#    - Implement proper logging for each container
+#    - Consider startup time impact of init containers
+#
+# ====================================================================

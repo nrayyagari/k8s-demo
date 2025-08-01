@@ -1,0 +1,660 @@
+# ====================================================================
+# LABELS AND SELECTORS: Organize and Query Your Kubernetes Resources
+# ====================================================================
+#
+# WHY: Need to organize, group, and select resources efficiently
+# SOLUTION: Labels provide metadata tags, selectors enable powerful queries
+#
+# KEY POINTS:
+# - Labels are key-value pairs attached to resources for organization
+# - Selectors query resources based on their labels
+# - Essential for services, deployments, network policies, and operations
+# - Enable batch operations and resource grouping
+#
+# ====================================================================
+
+# --------------------------------------------------------------------
+# 1. BASIC LABELING - Simple application with standard labels
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  
+  # Deployment labels - describe the deployment itself
+  labels:
+    # Standard Kubernetes recommended labels
+    app.kubernetes.io/name: webapp
+    app.kubernetes.io/instance: webapp-prod
+    app.kubernetes.io/version: "2.1.0"
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: ecommerce-platform
+    app.kubernetes.io/managed-by: kubectl
+    
+    # Custom organizational labels
+    team.company.com/owner: frontend-team
+    environment.company.com/stage: production
+    cost.company.com/center: product-development
+    monitoring.company.com/level: standard
+spec:
+  replicas: 3
+  
+  # Selector - how deployment finds its pods
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: webapp
+      app.kubernetes.io/instance: webapp-prod
+      app.kubernetes.io/component: frontend
+  
+  # Pod template
+  template:
+    metadata:
+      # Pod labels - MUST include selector labels plus additional ones
+      labels:
+        # Required: All selector labels must be here
+        app.kubernetes.io/name: webapp
+        app.kubernetes.io/instance: webapp-prod
+        app.kubernetes.io/component: frontend
+        
+        # Additional pod-specific labels
+        app.kubernetes.io/version: "2.1.0"
+        app.kubernetes.io/part-of: ecommerce-platform
+        environment.company.com/stage: production
+        pod.company.com/role: web-server
+        monitoring.company.com/scrape: "true"
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# --------------------------------------------------------------------
+# 2. SERVICE SELECTION - How services find pods using selectors
+# --------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+  
+  # Service labels
+  labels:
+    app.kubernetes.io/name: webapp
+    app.kubernetes.io/component: frontend
+    service.company.com/type: web
+    environment.company.com/stage: production
+spec:
+  # Service selector - finds pods with matching labels
+  selector:
+    app.kubernetes.io/name: webapp
+    app.kubernetes.io/instance: webapp-prod
+    app.kubernetes.io/component: frontend
+    # Service will route traffic to pods with ALL these labels
+  
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# --------------------------------------------------------------------
+# 3. ADVANCED SELECTORS - Set-based selection with matchExpressions
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  labels:
+    app.kubernetes.io/name: api-server
+    app.kubernetes.io/version: "1.5.0"
+    tier.company.com/level: backend
+spec:
+  replicas: 4
+  
+  # Advanced selector with matchExpressions
+  selector:
+    # Can use matchLabels (equality) AND matchExpressions (set-based)
+    matchLabels:
+      app.kubernetes.io/name: api-server
+    
+    matchExpressions:
+    # Include multiple environments  
+    - key: environment.company.com/stage
+      operator: In
+      values: ["production", "staging"]
+    
+    # Exclude canary deployments
+    - key: deployment.company.com/type
+      operator: NotIn  
+      values: ["canary", "experimental"]
+    
+    # Must have release label (any value)
+    - key: release.company.com/version
+      operator: Exists
+    
+    # Must NOT have debug label
+    - key: debug.company.com/enabled
+      operator: DoesNotExist
+  
+  template:
+    metadata:
+      labels:
+        # Must satisfy selector requirements
+        app.kubernetes.io/name: api-server
+        app.kubernetes.io/version: "1.5.0" 
+        app.kubernetes.io/component: api
+        environment.company.com/stage: production
+        release.company.com/version: "1.5.0"
+        tier.company.com/level: backend
+        pod.company.com/role: api-server
+    spec:
+      containers:
+      - name: api
+        image: api-server:1.5.0
+        ports:
+        - containerPort: 8080
+
+---
+# --------------------------------------------------------------------
+# 4. MULTI-TIER APPLICATION - Complete application with relationships
+# --------------------------------------------------------------------
+
+# Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: ecommerce
+    app.kubernetes.io/instance: ecommerce-prod
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: ecommerce-platform
+    tier.company.com/level: presentation
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ecommerce
+      app.kubernetes.io/component: frontend
+      tier.company.com/level: presentation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ecommerce
+        app.kubernetes.io/instance: ecommerce-prod
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: ecommerce-platform
+        tier.company.com/level: presentation
+        pod.company.com/role: web-server
+    spec:
+      containers:
+      - name: frontend
+        image: ecommerce-frontend:v2.1.0
+        ports:
+        - containerPort: 80
+
+---
+# Backend API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-api
+  labels:
+    app.kubernetes.io/name: ecommerce
+    app.kubernetes.io/instance: ecommerce-prod
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: ecommerce-platform
+    tier.company.com/level: application
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ecommerce
+      app.kubernetes.io/component: backend
+      tier.company.com/level: application
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ecommerce
+        app.kubernetes.io/instance: ecommerce-prod
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: ecommerce-platform
+        tier.company.com/level: application
+        pod.company.com/role: api-server
+        access.company.com/database: "required"
+    spec:
+      containers:
+      - name: api
+        image: ecommerce-api:v1.8.0
+        ports:
+        - containerPort: 8080
+
+---
+# Database Deployment
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: database
+  labels:
+    app.kubernetes.io/name: ecommerce
+    app.kubernetes.io/instance: ecommerce-prod
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: ecommerce-platform
+    tier.company.com/level: data
+    database.company.com/engine: postgresql
+spec:
+  serviceName: database
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ecommerce
+      app.kubernetes.io/component: database
+      tier.company.com/level: data
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ecommerce
+        app.kubernetes.io/instance: ecommerce-prod
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: ecommerce-platform
+        tier.company.com/level: data
+        database.company.com/engine: postgresql
+        pod.company.com/storage-type: persistent
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+
+---
+# --------------------------------------------------------------------
+# 5. SERVICES WITH DIFFERENT SELECTOR STRATEGIES
+# --------------------------------------------------------------------
+
+# Service for frontend pods only
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  labels:
+    service.company.com/type: frontend
+spec:
+  selector:
+    app.kubernetes.io/name: ecommerce
+    app.kubernetes.io/component: frontend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
+
+---
+# Service for backend API only
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  labels:
+    service.company.com/type: backend-api
+spec:
+  selector:
+    app.kubernetes.io/name: ecommerce
+    app.kubernetes.io/component: backend
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Service for database access
+apiVersion: v1
+kind: Service
+metadata:
+  name: database-service
+  labels:
+    service.company.com/type: database
+spec:
+  selector:
+    app.kubernetes.io/name: ecommerce
+    app.kubernetes.io/component: database
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+
+---
+# Aggregate service for all application components
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecommerce-all-services
+  labels:
+    service.company.com/type: aggregate
+spec:
+  # This selector matches ALL ecommerce components
+  selector:
+    app.kubernetes.io/name: ecommerce
+    app.kubernetes.io/part-of: ecommerce-platform
+  ports:
+  - name: web
+    port: 80
+    targetPort: 80
+  - name: api
+    port: 8080
+    targetPort: 8080
+
+---
+# --------------------------------------------------------------------
+# 6. NETWORK POLICY USING LABEL SELECTORS
+# --------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: database-access-policy
+  labels:
+    policy.company.com/type: database-access
+spec:
+  # Apply to all database pods
+  podSelector:
+    matchLabels:
+      tier.company.com/level: data
+  
+  policyTypes:
+  - Ingress
+  
+  ingress:
+  # Only allow access from application tier
+  - from:
+    - podSelector:
+        matchLabels:
+          tier.company.com/level: application
+        matchExpressions:
+        - key: access.company.com/database
+          operator: In
+          values: ["required"]
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+# Policy for frontend to backend communication
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-to-backend-policy
+spec:
+  # Apply to backend pods
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  
+  policyTypes:
+  - Ingress
+  
+  ingress:
+  # Allow frontend to call backend
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: frontend
+    ports:
+    - protocol: TCP
+      port: 8080
+
+---
+# --------------------------------------------------------------------
+# 7. OPERATIONAL LABELS - Cost tracking, monitoring, alerting
+# --------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service
+  labels:
+    # Application identification
+    app.kubernetes.io/name: analytics-service
+    app.kubernetes.io/version: "3.2.1"
+    app.kubernetes.io/component: analytics
+    
+    # Team and ownership
+    team.company.com/owner: data-team
+    team.company.com/lead: alice@company.com
+    team.company.com/slack: "#data-team-alerts"
+    
+    # Environment and lifecycle
+    environment.company.com/stage: production
+    environment.company.com/region: us-west-2
+    lifecycle.company.com/phase: stable
+    
+    # Cost allocation
+    cost.company.com/center: analytics-department
+    cost.company.com/project: customer-insights
+    cost.company.com/budget-code: PROJ-2024-001
+    
+    # Monitoring and alerting
+    monitoring.company.com/level: critical
+    monitoring.company.com/scrape: "true"
+    monitoring.company.com/port: "8080"
+    alert.company.com/pager-duty: "true"
+    alert.company.com/slack-channel: "#critical-alerts"
+    
+    # Compliance and security
+    security.company.com/classification: internal
+    compliance.company.com/pci-required: "false"
+    backup.company.com/required: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: analytics-service
+      app.kubernetes.io/component: analytics
+  template:
+    metadata:
+      labels:
+        # Core application labels
+        app.kubernetes.io/name: analytics-service
+        app.kubernetes.io/version: "3.2.1"
+        app.kubernetes.io/component: analytics
+        
+        # Operational labels
+        environment.company.com/stage: production
+        team.company.com/owner: data-team
+        monitoring.company.com/scrape: "true"
+        cost.company.com/center: analytics-department
+        
+        # Pod-specific labels
+        pod.company.com/role: analytics-processor
+        pod.company.com/data-access: "required"
+    spec:
+      containers:
+      - name: analytics
+        image: analytics-service:3.2.1
+        ports:
+        - name: http
+          containerPort: 8080
+        - name: metrics
+          containerPort: 9090
+
+---
+# --------------------------------------------------------------------
+# 8. CANARY DEPLOYMENT WITH LABELS
+# --------------------------------------------------------------------
+
+# Stable version (90% of traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service-stable
+  labels:
+    app.kubernetes.io/name: user-service
+    app.kubernetes.io/version: "2.1.0"
+    deployment.company.com/type: stable
+    deployment.company.com/traffic-weight: "90"
+spec:
+  replicas: 9  # 90% of replicas
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: user-service
+      deployment.company.com/type: stable
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: user-service
+        app.kubernetes.io/version: "2.1.0"
+        deployment.company.com/type: stable
+        deployment.company.com/traffic-weight: "90"
+        release.company.com/stability: production
+    spec:
+      containers:
+      - name: user-service
+        image: user-service:2.1.0
+        ports:
+        - containerPort: 8080
+
+---
+# Canary version (10% of traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service-canary
+  labels:
+    app.kubernetes.io/name: user-service
+    app.kubernetes.io/version: "2.2.0"
+    deployment.company.com/type: canary
+    deployment.company.com/traffic-weight: "10"
+spec:
+  replicas: 1  # 10% of replicas
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: user-service
+      deployment.company.com/type: canary
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: user-service
+        app.kubernetes.io/version: "2.2.0"  
+        deployment.company.com/type: canary
+        deployment.company.com/traffic-weight: "10"
+        release.company.com/stability: testing
+        feature.company.com/new-api: "enabled"
+    spec:
+      containers:
+      - name: user-service
+        image: user-service:2.2.0
+        ports:
+        - containerPort: 8080
+
+---
+# Service that routes to both stable and canary
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  labels:
+    service.company.com/type: user-api
+    service.company.com/strategy: canary
+spec:
+  # Routes to both stable and canary pods based on replica ratio
+  selector:
+    app.kubernetes.io/name: user-service
+    # Note: Does not select by deployment type - gets both
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# Service for stable version only (fallback)
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service-stable-only
+  labels:
+    service.company.com/type: user-api-stable
+spec:
+  selector:
+    app.kubernetes.io/name: user-service
+    deployment.company.com/type: stable
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# ====================================================================
+# LABEL OPERATIONS AND QUERIES
+# ====================================================================
+#
+# After applying these resources, try these kubectl commands:
+#
+# BASIC QUERIES:
+# kubectl get pods -l app.kubernetes.io/name=webapp
+# kubectl get pods -l tier.company.com/level=application
+# kubectl get pods -l environment.company.com/stage=production
+# kubectl get all -l app.kubernetes.io/part-of=ecommerce-platform
+#
+# ADVANCED QUERIES:
+# kubectl get pods -l 'environment.company.com/stage in (production,staging)'
+# kubectl get pods -l 'deployment.company.com/type notin (canary,experimental)'
+# kubectl get pods -l 'monitoring.company.com/scrape'  # Has label
+# kubectl get pods -l '!canary'  # Doesn't have canary label
+#
+# SHOW LABELS:
+# kubectl get pods --show-labels
+# kubectl get pods -L app.kubernetes.io/name,tier.company.com/level
+# kubectl get services --show-labels
+#
+# LABEL MANAGEMENT:
+# kubectl label pod <pod-name> version=1.2.0
+# kubectl label pod <pod-name> version=1.2.1 --overwrite
+# kubectl label pod <pod-name> version-  # Remove label
+#
+# BULK OPERATIONS:
+# kubectl delete pods -l deployment.company.com/type=canary
+# kubectl scale deployment -l app.kubernetes.io/component=frontend --replicas=5
+# kubectl label pods -l app.kubernetes.io/name=ecommerce team=platform
+#
+# SERVICE ENDPOINT DEBUGGING:
+# kubectl describe service frontend-service
+# kubectl get endpoints frontend-service
+# kubectl get pods -l $(kubectl get service frontend-service -o jsonpath='{.spec.selector}')
+#
+# ====================================================================
+
+# KEY LEARNING POINTS:
+#
+# 1. LABEL STRUCTURE:
+#    - Use consistent, hierarchical naming (app.kubernetes.io/name)
+#    - Include organization prefixes (team.company.com/owner)
+#    - Keep values simple and meaningful
+#
+# 2. SELECTOR TYPES:
+#    - Equality-based: app=nginx,tier=frontend
+#    - Set-based: matchExpressions with In, NotIn, Exists, DoesNotExist
+#    - Services only support equality-based selectors
+#
+# 3. LABEL BEST PRACTICES:
+#    - Always include app.kubernetes.io/name for identification
+#    - Add operational labels (team, environment, cost-center)
+#    - Use consistent values across environments
+#    - Document label meanings and conventions
+#
+# 4. SELECTOR STRATEGY:
+#    - Pod template labels MUST include all selector labels
+#    - Use stable labels for selectors (not version numbers)
+#    - Prefer simple equality for service selectors
+#    - Use set-based for complex logic in other resources
+#
+# 5. OPERATIONAL USAGE:
+#    - Monitor resources by labels
+#    - Track costs by cost-center labels  
+#    - Route traffic with service selectors
+#    - Apply network policies with label selectors
+#
+# ====================================================================
