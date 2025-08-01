@@ -1,0 +1,107 @@
+# Complete Resource Management Setup
+# Purpose: Full namespace with both ResourceQuota and LimitRange
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  labels:
+    team: platform
+    environment: dev
+    cost-center: engineering
+
+---
+# ResourceQuota: Limits total namespace consumption
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: development
+spec:
+  hard:
+    # Compute Resources
+    requests.cpu: "8"        # 8 CPU cores for requests
+    requests.memory: "16Gi"  # 16GB memory for requests
+    limits.cpu: "16"         # 16 CPU cores for limits  
+    limits.memory: "32Gi"    # 32GB memory for limits
+    
+    # Object Limits
+    pods: "20"               # Max 20 pods in namespace
+    services: "10"           # Max 10 services
+    persistentvolumeclaims: "8"  # Max 8 PVCs
+    secrets: "20"            # Max 20 secrets
+    configmaps: "20"         # Max 20 configmaps
+    
+    # Storage  
+    requests.storage: "200Gi"  # 200GB total storage
+    
+    # Count by Quality of Service
+    count/pods: "20"         # Total pod count limit
+
+---
+# LimitRange: Sets defaults and constraints per container
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: dev-limits
+  namespace: development
+spec:
+  limits:
+  # Container-level limits
+  - type: Container
+    default:
+      cpu: "1"             # Default limit: 1 CPU core
+      memory: "1Gi"        # Default limit: 1GB memory
+    defaultRequest:
+      cpu: "200m"          # Default request: 0.2 CPU core
+      memory: "256Mi"      # Default request: 256MB memory
+    max:
+      cpu: "4"             # Max per container: 4 CPU cores
+      memory: "8Gi"        # Max per container: 8GB memory
+    min:
+      cpu: "100m"          # Min per container: 0.1 CPU core  
+      memory: "128Mi"      # Min per container: 128MB memory
+    maxLimitRequestRatio:
+      cpu: "10"            # Limit can be 10x request
+      memory: "4"          # Memory limit can be 4x request
+  
+  # Pod-level limits (sum of all containers in pod)
+  - type: Pod
+    max:
+      cpu: "6"             # Max total CPU per pod
+      memory: "12Gi"       # Max total memory per pod
+
+  # PersistentVolumeClaim limits
+  - type: PersistentVolumeClaim
+    max:
+      storage: "50Gi"      # Max storage per PVC
+    min:
+      storage: "1Gi"       # Min storage per PVC
+
+# RESOURCE HIERARCHY EXAMPLE:
+# Namespace Quota: 16 CPU limits total
+# ├── Pod 1: 2 CPU limit (within quota)
+# │   ├── Container 1: 1 CPU limit (within pod and container max)
+# │   └── Container 2: 1 CPU limit (within pod and container max)  
+# ├── Pod 2: 4 CPU limit (within quota)
+# │   └── Container 3: 4 CPU limit (at container max)
+# └── Remaining: 10 CPU limits available
+
+# HOW TO USE:
+# 1. kubectl apply -f 03-complete-setup.yaml
+# 2. kubectl get resourcequota,limitrange -n development
+# 3. kubectl describe resourcequota dev-quota -n development
+# 4. kubectl describe limitrange dev-limits -n development
+
+# REAL-WORLD SCENARIO:
+# Development team of 5 developers:
+# - Each might run 2-4 pods simultaneously  
+# - Total: ~20 pods (matches quota)
+# - Each pod typically needs 200m CPU, 256Mi memory
+# - Some larger apps need up to 4 CPU, 8Gi memory
+# - Storage for databases and persistent data
+
+# MONITORING COMMANDS:
+# kubectl top pods -n development
+# kubectl get events -n development | grep -i quota
+# kubectl get pods -n development -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].resources}{"\n"}{end}'

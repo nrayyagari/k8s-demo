@@ -1,0 +1,76 @@
+# LimitRange Example
+# Purpose: Set default resource limits and enforce min/max per container
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: limitrange-demo
+  labels:
+    purpose: limitrange-demo
+
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-limits
+  namespace: limitrange-demo
+spec:
+  limits:
+  - type: Container
+    # Default limits applied if container doesn't specify limits
+    default:
+      cpu: "500m"          # 0.5 CPU core limit
+      memory: "512Mi"      # 512MB memory limit
+      
+    # Default requests applied if container doesn't specify requests  
+    defaultRequest:
+      cpu: "100m"          # 0.1 CPU core request
+      memory: "128Mi"      # 128MB memory request
+      
+    # Maximum resources allowed per container
+    max:
+      cpu: "2"             # No container can exceed 2 CPU cores
+      memory: "2Gi"        # No container can exceed 2GB memory
+      
+    # Minimum resources required per container
+    min:
+      cpu: "50m"           # Every container must request at least 0.05 CPU
+      memory: "64Mi"       # Every container must request at least 64MB
+
+    # Maximum ratio between limit and request (prevents waste)
+    maxLimitRequestRatio:
+      cpu: "4"             # Limit can be at most 4x the request
+      memory: "2"          # Memory limit can be at most 2x the request
+
+# WHAT THIS DOES:
+# 1. If a pod doesn't specify resources → gets defaults applied
+# 2. If a pod exceeds max → rejected with error
+# 3. If a pod is below min → rejected with error  
+# 4. If limit/request ratio too high → rejected
+
+# EXAMPLE: Pod without resource specification
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: auto-resources
+#   namespace: limitrange-demo
+# spec:
+#   containers:
+#   - name: nginx
+#     image: nginx:alpine
+#     # No resources specified - gets defaults:
+#     # requests: cpu=100m, memory=128Mi
+#     # limits: cpu=500m, memory=512Mi
+
+# HOW TO TEST:
+# 1. kubectl apply -f 02-container-limits.yaml
+# 2. kubectl get limitrange -n limitrange-demo
+# 3. kubectl describe limitrange container-limits -n limitrange-demo
+# 4. Deploy pod without resources - see defaults applied
+# 5. Try deploying pod exceeding max - see rejection
+
+# PRODUCTION BENEFITS:
+# - Prevents "noisy neighbor" containers
+# - Ensures minimum QoS for all containers
+# - Provides sensible defaults for developers
+# - Prevents accidental resource waste

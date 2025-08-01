@@ -1,0 +1,141 @@
+# Pod with Explicit Resource Specifications
+# Purpose: Show how to properly specify container resources
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-pod
+  namespace: development
+  labels:
+    app: resource-demo
+    tier: frontend
+spec:
+  containers:
+  # Container 1: Web server with moderate resources
+  - name: nginx
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+    resources:
+      requests:
+        cpu: "200m"        # Request 0.2 CPU core (guaranteed)
+        memory: "256Mi"    # Request 256MB memory (guaranteed)
+      limits:
+        cpu: "500m"        # Limit to 0.5 CPU core (throttled if exceeded)
+        memory: "512Mi"    # Limit to 512MB memory (killed if exceeded)
+  
+  # Container 2: Sidecar with minimal resources
+  - name: log-collector
+    image: busybox:latest
+    command: ["sh", "-c", "while true; do echo 'Collecting logs...'; sleep 10; done"]
+    resources:
+      requests:
+        cpu: "50m"         # Minimum CPU needed
+        memory: "64Mi"     # Minimum memory needed
+      limits:
+        cpu: "100m"        # Small CPU limit
+        memory: "128Mi"    # Small memory limit
+
+---
+# Pod with High Resource Requirements (for testing limits)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: high-resource-pod
+  namespace: development
+  labels:
+    app: resource-demo
+    tier: compute-intensive
+spec:
+  containers:
+  - name: compute-app
+    image: nginx:alpine
+    resources:
+      requests:
+        cpu: "1"           # Request 1 full CPU core
+        memory: "2Gi"      # Request 2GB memory
+      limits:
+        cpu: "2"           # Limit to 2 CPU cores
+        memory: "4Gi"      # Limit to 4GB memory
+
+---
+# Pod without resource specifications (will get defaults from LimitRange)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: default-resources-pod
+  namespace: development
+  labels:
+    app: resource-demo
+    tier: default
+spec:
+  containers:
+  - name: nginx
+    image: nginx:alpine
+    # No resources specified - LimitRange will apply defaults:
+    # requests: cpu=200m, memory=256Mi  
+    # limits: cpu=1, memory=1Gi
+
+# UNDERSTANDING THE RESOURCE SPECS:
+
+# CPU UNITS:
+# - "1" = 1 CPU core
+# - "500m" = 0.5 CPU core (500 millicores)
+# - "100m" = 0.1 CPU core
+# - "2000m" = 2 CPU cores
+
+# MEMORY UNITS:
+# - "128Mi" = 128 Mebibytes (binary)
+# - "1Gi" = 1 Gibibyte (binary)  
+# - "500M" = 500 Megabytes (decimal)
+# - "1G" = 1 Gigabyte (decimal)
+
+# RESOURCE BEHAVIOR:
+# CPU:
+# - Request: Guaranteed allocation, used for scheduling
+# - Limit: Throttled if exceeded (process slowed down)
+
+# Memory:  
+# - Request: Guaranteed allocation, used for scheduling
+# - Limit: Killed (OOMKilled) if exceeded
+
+# HOW TO TEST:
+# 1. kubectl apply -f 04-pod-with-resources.yaml
+# 2. kubectl get pods -n development
+# 3. kubectl describe pod example-pod -n development
+# 4. Look for "Requests" and "Limits" in output
+# 5. kubectl top pod example-pod -n development (if metrics-server installed)
+
+# PRODUCTION PATTERNS:
+
+# Pattern 1: Equal requests and limits (Guaranteed QoS)
+# resources:
+#   requests:
+#     cpu: "500m"
+#     memory: "1Gi"
+#   limits:
+#     cpu: "500m"      # Same as request
+#     memory: "1Gi"    # Same as request
+
+# Pattern 2: Higher limits than requests (Burstable QoS)  
+# resources:
+#   requests:
+#     cpu: "200m"      # Base allocation
+#     memory: "256Mi"  # Base allocation
+#   limits:
+#     cpu: "1"         # Can burst to 1 CPU
+#     memory: "1Gi"    # Can burst to 1GB
+
+# Pattern 3: No limits, only requests (Burstable QoS)
+# resources:
+#   requests:
+#     cpu: "200m"
+#     memory: "256Mi"
+#   # No limits - can use any available resources
+
+# COMMON MISTAKES:
+# ❌ No resource specifications (relies on defaults)
+# ❌ Only limits, no requests (scheduling issues)
+# ❌ Requests higher than limits (invalid)
+# ❌ Memory limits too low (frequent OOMKills)
+# ❌ CPU requests too high (poor scheduling efficiency)

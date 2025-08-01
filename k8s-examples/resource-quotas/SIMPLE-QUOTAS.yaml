@@ -1,0 +1,86 @@
+# SIMPLE Resource Quotas - Quick Start Guide
+# Purpose: Minimal working example to get started with resource management
+
+# Step 1: Create namespace with basic quota
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: simple-quota-demo
+
+---
+# Step 2: Set namespace resource limits
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: simple-quota
+  namespace: simple-quota-demo
+spec:
+  hard:
+    requests.cpu: "2"        # Total: 2 CPU cores for requests
+    requests.memory: "4Gi"   # Total: 4GB memory for requests
+    pods: "5"                # Max: 5 pods allowed
+
+---
+# Step 3: Set container defaults and limits
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: simple-limits
+  namespace: simple-quota-demo
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: "500m"            # Default: 0.5 CPU limit
+      memory: "512Mi"        # Default: 512MB limit
+    defaultRequest:
+      cpu: "100m"            # Default: 0.1 CPU request
+      memory: "128Mi"        # Default: 128MB request
+    max:
+      cpu: "1"               # Max: 1 CPU per container
+      memory: "1Gi"          # Max: 1GB per container
+
+---
+# Step 4: Example pod (gets defaults applied)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod
+  namespace: simple-quota-demo
+spec:
+  containers:
+  - name: nginx
+    image: nginx:alpine
+    # No resources specified = gets defaults from LimitRange above
+
+# QUICK COMMANDS:
+# 1. Apply everything:
+#    kubectl apply -f SIMPLE-QUOTAS.yaml
+#
+# 2. Check quota status:
+#    kubectl get resourcequota -n simple-quota-demo
+#    kubectl describe resourcequota simple-quota -n simple-quota-demo
+#
+# 3. Check limits:
+#    kubectl get limitrange -n simple-quota-demo
+#    kubectl describe limitrange simple-limits -n simple-quota-demo
+#
+# 4. See pod with applied defaults:
+#    kubectl describe pod test-pod -n simple-quota-demo
+#    # Look for "Requests" and "Limits" sections
+#
+# 5. Test quota enforcement:
+#    kubectl scale deployment test-deployment --replicas=10 -n simple-quota-demo
+#    # Should fail when trying to exceed 5 pods
+
+# WHAT HAPPENS:
+# ✅ Namespace created with resource budget
+# ✅ Pod gets automatic resource defaults (100m CPU, 128Mi memory requests)
+# ✅ Pod gets automatic resource limits (500m CPU, 512Mi memory limits)
+# ✅ Quota prevents creating more than 5 pods
+# ✅ Quota prevents exceeding 2 CPU / 4Gi memory total
+
+# NEXT STEPS:
+# - Try creating more pods to hit quota limits
+# - Modify resource requests/limits on pods
+# - Look at complete examples in other files

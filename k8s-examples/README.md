@@ -22,6 +22,7 @@ k8s-examples/
 ├── autoscaling/    # Horizontal Pod Autoscaler examples
 ├── rbac/           # Roles, ClusterRoles, and RBAC examples
 ├── scheduling/     # Pod scheduling, taints/tolerations, affinity/anti-affinity
+├── resource-quotas/ # Resource quotas and limits for resource management
 ├── troubleshooting/ # Debugging scenarios and systematic troubleshooting
 └── README.md       # This file
 ```
@@ -58,17 +59,21 @@ k8s-examples/
 - Problem: Default scheduler doesn't understand business needs
 - Solution: Control pod placement for performance and availability
 
-**8. My application isn't working - how do I debug?** → **Troubleshooting**
+**8. How do I prevent resource starvation?** → **Resource Quotas & Limits**
+- Problem: Apps consume unlimited resources, causing instability
+- Solution: Set quotas per namespace and limits per container
+
+**9. My application isn't working - how do I debug?** → **Troubleshooting**
 - Problem: Complex systems fail in subtle ways
 - Solution: Systematic debugging approach using the right tools
 
 ### The 90/10 Rule
 
 **90% of workloads**: Stateless web apps
-- Use: Deployment + Service + Ingress + Health Probes
+- Use: Deployment + Service + Ingress + Health Probes + Resource Quotas
 
 **10% of workloads**: Stateful systems  
-- Use: StatefulSet + Headless Service + Health Probes
+- Use: StatefulSet + Headless Service + Health Probes + Resource Quotas
 
 ## Learning Path: Start Here
 
@@ -108,7 +113,12 @@ kubectl apply -f rbac/SIMPLE-RBAC.yaml
 kubectl apply -f scheduling/SIMPLE-SCHEDULING.yaml
 ```
 
-### 8. Debug Issues Systematically
+### 8. Set Resource Limits
+```bash
+kubectl apply -f resource-quotas/SIMPLE-QUOTAS.yaml
+```
+
+### 9. Debug Issues Systematically
 ```bash
 kubectl apply -f troubleshooting/SIMPLE-DEBUG.yaml
 ```
@@ -117,7 +127,7 @@ kubectl apply -f troubleshooting/SIMPLE-DEBUG.yaml
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
-**Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling  
+**Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling → Add Resource Quotas  
 **Level 4**: Master Troubleshooting (essential for production)
 
 Each level solves a specific problem. Don't skip ahead.
@@ -160,6 +170,7 @@ kubectl get services
 kubectl get statefulsets
 kubectl get daemonsets
 kubectl get pdb
+kubectl get resourcequota,limitrange
 kubectl get roles,rolebindings,clusterroles,clusterrolebindings
 ```
 
@@ -189,6 +200,13 @@ kubectl get pods -o wide
 kubectl describe pod <pod-name> | grep -A 10 "Node-Selectors"
 ```
 
+### Check resource quotas and limits:
+```bash
+kubectl describe resourcequota <quota-name> -n <namespace>
+kubectl describe limitrange <limitrange-name> -n <namespace>
+kubectl top pods -n <namespace>
+```
+
 ### Debug application issues:
 ```bash
 kubectl get events --sort-by='.lastTimestamp'
@@ -207,6 +225,7 @@ kubectl delete -f daemonsets/
 kubectl delete -f pdbs/
 kubectl delete -f rbac/
 kubectl delete -f scheduling/
+kubectl delete -f resource-quotas/
 kubectl delete -f troubleshooting/
 ```
 

@@ -1,0 +1,56 @@
+# Basic ResourceQuota Example
+# Purpose: Limit total resource consumption in a namespace
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quota-demo
+  labels:
+    purpose: resource-quota-demo
+
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: basic-quota
+  namespace: quota-demo
+spec:
+  hard:
+    # CPU Resources
+    requests.cpu: "4"        # Total CPU requests allowed in namespace
+    limits.cpu: "8"          # Total CPU limits allowed in namespace
+    
+    # Memory Resources  
+    requests.memory: "8Gi"   # Total memory requests allowed
+    limits.memory: "16Gi"    # Total memory limits allowed
+    
+    # Object Counts
+    pods: "10"               # Maximum number of pods
+    persistentvolumeclaims: "4"  # Maximum number of PVCs
+    services: "5"            # Maximum number of services
+    secrets: "10"            # Maximum number of secrets
+    configmaps: "10"         # Maximum number of configmaps
+    
+    # Storage
+    requests.storage: "100Gi"  # Total storage requests allowed
+
+# HOW TO USE:
+# 1. kubectl apply -f 01-namespace-quota.yaml
+# 2. kubectl get resourcequota -n quota-demo
+# 3. kubectl describe resourcequota basic-quota -n quota-demo
+#
+# This will show:
+# - Used: 0/4 CPU requests, 0/8Gi memory requests, 0/10 pods
+# - When you deploy pods, these numbers will increase
+#
+# TRY IT:
+# - Deploy pods with resource specifications
+# - Watch quota consumption increase
+# - Try to exceed quota - deployments will be rejected
+
+# PRODUCTION TIP:
+# Set quotas based on:
+# - Team size and expected workload
+# - Node capacity in your cluster  
+# - Budget constraints
+# Example: 3-person team might get 10 CPU, 20Gi memory quota
