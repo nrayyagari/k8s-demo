@@ -1,0 +1,367 @@
+# System Pods and Tolerations: Running Infrastructure Everywhere
+# WHY: System pods need to run on ALL nodes regardless of taints
+# PATTERN: Wide tolerations for infrastructure, specific tolerations for workloads
+
+---
+# Master/Control Plane Tolerations
+# System pods that need to run on control plane nodes
+apiVersion: v1
+kind: Pod
+metadata:
+  name: control-plane-monitor
+  labels:
+    app: cluster-monitor
+    component: control-plane
+spec:
+  # Common control plane tolerations
+  tolerations:
+  # Modern Kubernetes control plane taint
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  # Legacy master node taint (older clusters)
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+  # Control plane can be unschedulable during updates
+  - key: node.kubernetes.io/unschedulable
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: monitor
+    image: prom/node-exporter:v1.6.0
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "25m"
+      limits:
+        memory: "64Mi"
+        cpu: "50m"
+    ports:
+    - containerPort: 9100
+
+---
+# Node-Level System Pod (like DaemonSet pods)
+# Must run on every node regardless of taints
+apiVersion: v1
+kind: Pod
+metadata:
+  name: universal-system-pod
+  labels:
+    app: log-collector
+    type: system-universal
+spec:
+  # Universal tolerations - can run anywhere
+  tolerations:
+  # Tolerate any taint with NoSchedule effect
+  - operator: Exists
+    effect: NoSchedule
+  # Tolerate any taint with PreferNoSchedule effect
+  - operator: Exists
+    effect: PreferNoSchedule
+  # Tolerate node being not ready (startup scenarios)
+  - key: node.kubernetes.io/not-ready
+    operator: Exists
+    effect: NoSchedule
+  # Tolerate node being unreachable
+  - key: node.kubernetes.io/unreachable
+    operator: Exists
+    effect: NoSchedule
+  # Disk pressure tolerance
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoSchedule
+  # Memory pressure tolerance
+  - key: node.kubernetes.io/memory-pressure
+    operator: Exists
+    effect: NoSchedule
+  # PID pressure tolerance
+  - key: node.kubernetes.io/pid-pressure
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: fluent-bit
+    image: fluent/fluent-bit:2.1.0
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+    volumeMounts:
+    - name: varlog
+      mountPath: /var/log
+      readOnly: true
+    - name: dockercontainers
+      mountPath: /var/lib/docker/containers
+      readOnly: true
+  volumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+  - name: dockercontainers
+    hostPath:
+      path: /var/lib/docker/containers
+
+---
+# Selective System Pod - runs only on worker nodes
+apiVersion: v1
+kind: Pod
+metadata:
+  name: worker-only-system-pod
+  labels:
+    app: worker-monitor
+    type: system-worker
+spec:
+  # Selective tolerations - excludes control plane
+  tolerations:
+  # Custom workload taints
+  - key: workload
+    operator: Exists
+    effect: NoSchedule
+  - key: customer
+    operator: Exists
+    effect: NoSchedule
+  # Node condition taints
+  - key: node.kubernetes.io/not-ready
+    operator: Exists
+    effect: NoSchedule
+  - key: node.kubernetes.io/unreachable
+    operator: Exists
+    effect: NoSchedule
+  # Resource pressure taints
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoSchedule
+  - key: node.kubernetes.io/memory-pressure
+    operator: Exists
+    effect: NoSchedule
+  # Spot/preemptible instance taints
+  - key: node.kubernetes.io/instance-type
+    operator: Equal
+    value: spot
+    effect: NoSchedule
+  # NO control plane toleration - won't run on masters
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""  # Only worker nodes
+  containers:
+  - name: worker-metrics
+    image: prom/node-exporter:v1.6.0
+    args:
+    - '--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+)($|/)'
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "25m"
+      limits:
+        memory: "64Mi"
+        cpu: "50m"
+    ports:
+    - containerPort: 9100
+
+---
+# Network System Pod - needs host network
+apiVersion: v1
+kind: Pod
+metadata:
+  name: network-system-pod
+  labels:
+    app: network-monitor
+    type: system-network
+spec:
+  hostNetwork: true  # Uses host network namespace
+  dnsPolicy: ClusterFirstWithHostNet
+  tolerations:
+  # Must run everywhere for network monitoring
+  - operator: Exists
+    effect: NoSchedule
+  - operator: Exists
+    effect: PreferNoSchedule
+  # Handle network-related node taints
+  - key: node.kubernetes.io/network-unavailable
+    operator: Exists
+    effect: NoSchedule
+  # Handle node startup issues
+  - key: node.kubernetes.io/not-ready
+    operator: Exists
+    effect: NoSchedule
+    tolerationSeconds: 120
+  containers:
+  - name: network-tools
+    image: nicolaka/netshoot:v0.11
+    command: ['sleep', '86400']  # Keep alive for debugging
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "25m"
+      limits:
+        memory: "64Mi"
+        cpu: "50m"
+    securityContext:
+      capabilities:
+        add: ['NET_ADMIN']
+    env:
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+
+---
+# Emergency System Pod - survives NoExecute taints
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emergency-system-pod
+  labels:
+    app: emergency-responder
+    type: system-emergency
+spec:
+  # Tolerations that survive even NoExecute scenarios
+  tolerations:
+  # Tolerate all NoSchedule taints
+  - operator: Exists
+    effect: NoSchedule
+  # Tolerate all PreferNoSchedule taints
+  - operator: Exists
+    effect: PreferNoSchedule
+  # Tolerate NoExecute with long grace periods
+  - operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 3600  # 1 hour grace period
+  # Specific emergency scenarios
+  - key: node.kubernetes.io/out-of-disk
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 300
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 300
+  containers:
+  - name: emergency-toolkit
+    image: busybox:1.35
+    command: ['sh', '-c', 'while true; do echo "Emergency system active: $(date)"; sleep 60; done']
+    resources:
+      requests:
+        memory: "16Mi"
+        cpu: "10m"
+      limits:
+        memory: "32Mi"
+        cpu: "25m"
+    env:
+    - name: EMERGENCY_MODE
+      value: "true"
+    - name: SYSTEM_ROLE
+      value: "emergency-responder"
+
+---
+# Testing DaemonSet Pattern - shows how DaemonSets work
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: system-daemonset-example
+spec:
+  selector:
+    matchLabels:
+      app: system-daemon
+  template:
+    metadata:
+      labels:
+        app: system-daemon
+    spec:
+      # DaemonSet pods typically need wide tolerations
+      tolerations:
+      # Run on control plane
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      # Run on tainted worker nodes
+      - operator: Exists
+        effect: NoSchedule
+      # Handle node pressure conditions
+      - key: node.kubernetes.io/memory-pressure
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/pid-pressure
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: system-agent
+        image: alpine:3.18
+        command: ['sh', '-c', 'while true; do echo "System daemon on $(hostname): $(date)"; sleep 30; done']
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "25m"
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+
+---
+# Testing Commands and Expected Behavior:
+
+# Phase 1: Deploy system pods
+# 1. Apply all system pods:
+#    kubectl apply -f 03-system-pods.yaml
+
+# 2. Check initial placement:
+#    kubectl get pods -o wide
+#    (All pods should be running)
+
+# Phase 2: Test control plane tolerance
+# 3. Check if control plane is tainted:
+#    kubectl describe node <control-plane-node> | grep -i taint
+
+# 4. Verify control-plane-monitor can run there:
+#    kubectl get pod control-plane-monitor -o wide
+
+# Phase 3: Test universal system pod
+# 5. Add various taints to different nodes:
+#    kubectl taint nodes <node1> workload=database:NoSchedule
+#    kubectl taint nodes <node2> customer=tenant-a:NoSchedule
+#    kubectl taint nodes <node3> hardware=gpu:NoSchedule
+
+# 6. Delete and recreate universal system pod:
+#    kubectl delete pod universal-system-pod
+#    kubectl apply -f 03-system-pods.yaml
+
+# 7. Verify it can still schedule:
+#    kubectl get pod universal-system-pod -o wide
+
+# Phase 4: Test DaemonSet behavior
+# 8. Check DaemonSet pod distribution:
+#    kubectl get daemonset system-daemonset-example -o wide
+#    kubectl get pods -l app=system-daemon -o wide
+
+# 9. DaemonSet should have pods on ALL nodes despite taints
+
+# Phase 5: Test NoExecute tolerance
+# 10. Apply NoExecute taint (WARNING: evicts regular pods):
+#     kubectl taint nodes <node1> maintenance=emergency:NoExecute
+
+# 11. Watch what happens:
+#     kubectl get pods -w
+#     Expected: emergency-system-pod survives, others may be evicted
+
+# Phase 6: Check system vs regular pod behavior
+# 12. Deploy a regular pod without tolerations:
+#     kubectl run test-pod --image=nginx --restart=Never
+
+# 13. Compare placement with system pods:
+#     kubectl get pods -o wide
+
+# Cleanup:
+# 14. Remove all test taints:
+#     kubectl taint nodes <node1> workload=database:NoSchedule-
+#     kubectl taint nodes <node2> customer=tenant-a:NoSchedule-
+#     kubectl taint nodes <node3> hardware=gpu:NoSchedule-
+#     kubectl taint nodes <node1> maintenance=emergency:NoExecute-

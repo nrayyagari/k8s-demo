@@ -1,0 +1,454 @@
+# Production Multi-Tenant Architecture with Taints/Tolerations
+# WHY: Enforce tenant isolation, resource allocation, and compliance requirements
+# PATTERN: Customer-specific nodes + service-tier nodes + shared infrastructure
+
+---
+# Tenant A: Financial Services - High Security Requirements
+# Node Taint: customer=tenant-a:NoExecute
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-a-frontend
+  namespace: tenant-a
+  labels:
+    customer: tenant-a
+    tier: frontend
+    security-level: high
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: tenant-a-frontend
+  template:
+    metadata:
+      labels:
+        app: tenant-a-frontend
+        customer: tenant-a
+        tier: frontend
+    spec:
+      # Strict tenant isolation
+      tolerations:
+      - key: customer
+        operator: Equal
+        value: tenant-a
+        effect: NoExecute
+      # Also tolerate shared infrastructure nodes
+      - key: tier
+        operator: Equal
+        value: shared
+        effect: NoSchedule
+      # Must run on tenant-specific or shared nodes only
+      nodeSelector:
+        tenant: tenant-a-or-shared
+      containers:
+      - name: frontend
+        image: nginx:1.21
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        ports:
+        - containerPort: 80
+        env:
+        - name: TENANT_ID
+          value: "tenant-a"
+        - name: SECURITY_LEVEL
+          value: "high"
+        - name: COMPLIANCE_MODE
+          value: "pci-dss"
+
+---
+# Tenant A: Database - Dedicated High-Memory Nodes
+# Node Taint: customer=tenant-a:NoExecute + workload=database:NoSchedule
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tenant-a-database
+  namespace: tenant-a
+spec:
+  serviceName: "tenant-a-db"
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tenant-a-database
+  template:
+    metadata:
+      labels:
+        app: tenant-a-database
+        customer: tenant-a
+        workload: database
+    spec:
+      # Multiple tolerations for dedicated database nodes
+      tolerations:
+      - key: customer
+        operator: Equal
+        value: tenant-a
+        effect: NoExecute
+      - key: workload
+        operator: Equal
+        value: database
+        effect: NoSchedule
+      # Prefer high-memory nodes
+      - key: memory-optimized
+        operator: Equal
+        value: "true"
+        effect: PreferNoSchedule
+      # Strict node requirements
+      nodeSelector:
+        node-type: database
+        customer: tenant-a
+      containers:
+      - name: postgres
+        image: postgres:15
+        env:
+        - name: POSTGRES_DB
+          value: "tenant_a_prod"
+        - name: POSTGRES_USER
+          value: "tenant_a_user"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: tenant-a-db-secret
+              key: password
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi" 
+            cpu: "1000m"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+# Tenant B: E-commerce - Medium Security, Cost-Optimized
+# Node Taint: customer=tenant-b:NoSchedule + cost-tier=optimized:PreferNoSchedule
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-b-api
+  namespace: tenant-b
+  labels:
+    customer: tenant-b
+    cost-tier: optimized
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: tenant-b-api
+  template:
+    metadata:
+      labels:
+        app: tenant-b-api
+        customer: tenant-b
+        cost-tier: optimized
+    spec:
+      tolerations:
+      # Primary: tenant-specific nodes
+      - key: customer
+        operator: Equal
+        value: tenant-b
+        effect: NoSchedule
+      # Secondary: cost-optimized shared nodes
+      - key: cost-tier
+        operator: Equal
+        value: optimized
+        effect: PreferNoSchedule
+      # Tertiary: spot instances for cost savings
+      - key: node.kubernetes.io/instance-type
+        operator: Equal
+        value: spot
+        effect: NoSchedule
+      # Can use shared nodes if needed
+      - key: tier
+        operator: Equal
+        value: shared
+        effect: NoSchedule
+      containers:
+      - name: api-server
+        image: node:18-alpine
+        command: ['node', 'server.js']
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        ports:
+        - containerPort: 3000
+        env:
+        - name: TENANT_ID
+          value: "tenant-b"
+        - name: COST_OPTIMIZATION
+          value: "enabled"
+        - name: SPOT_TOLERANT
+          value: "true"
+
+---
+# Shared Infrastructure: Monitoring and Logging
+# Runs across all tenant nodes + dedicated monitoring nodes
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: multi-tenant-monitoring
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: tenant-monitor
+  template:
+    metadata:
+      labels:
+        app: tenant-monitor
+        type: shared-infrastructure
+    spec:
+      # Ultra-wide tolerations for monitoring everywhere
+      tolerations:
+      # All customer taints
+      - key: customer
+        operator: Exists
+        effect: NoSchedule
+      - key: customer
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 60
+      # All workload taints
+      - key: workload
+        operator: Exists
+        effect: NoSchedule
+      # Cost optimization taints
+      - key: cost-tier
+        operator: Exists
+        effect: PreferNoSchedule
+      - key: node.kubernetes.io/instance-type
+        operator: Exists
+        effect: NoSchedule
+      # Node condition taints
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoSchedule
+      # Resource pressure taints
+      - operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: prometheus-agent
+        image: prom/prometheus:v2.40.0
+        args:
+        - '--config.file=/etc/prometheus/prometheus.yml'
+        - '--web.listen-address=0.0.0.0:9090'
+        - '--web.enable-lifecycle'
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        ports:
+        - containerPort: 9090
+        env:
+        - name: MULTI_TENANT_MODE
+          value: "true"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+
+---
+# Shared Services: Can run on dedicated shared nodes or tenant overflow
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shared-cache-service
+  namespace: shared-services
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: shared-cache
+  template:
+    metadata:
+      labels:
+        app: shared-cache
+        type: shared-service
+    spec:
+      # Flexible placement strategy
+      tolerations:
+      # Prefer dedicated shared nodes
+      - key: tier
+        operator: Equal
+        value: shared
+        effect: NoSchedule
+      # Can use tenant nodes if they allow shared services
+      - key: customer
+        operator: Equal
+        value: tenant-a
+        effect: NoSchedule
+      - key: customer
+        operator: Equal
+        value: tenant-b
+        effect: NoSchedule
+      # Cost-optimized placement
+      - key: cost-tier
+        operator: Equal
+        value: optimized
+        effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          # Prefer shared nodes first
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: tier
+                operator: In
+                values: ["shared"]
+          # Then cost-optimized nodes
+          - weight: 80
+            preference:
+              matchExpressions:
+              - key: cost-tier
+                operator: In
+                values: ["optimized"]
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+        ports:
+        - containerPort: 6379
+
+---
+# Emergency Override Pod: Can run anywhere during incidents
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emergency-override-pod
+  namespace: ops
+  labels:
+    priority: emergency
+    override: "true"
+spec:
+  # NUCLEAR OPTION: Tolerates everything
+  tolerations:
+  - operator: Exists
+  # Emergency priority class
+  priorityClassName: system-node-critical
+  containers:
+  - name: emergency-tools
+    image: nicolaka/netshoot:v0.11
+    command: ['sleep', '3600']
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+    env:
+    - name: EMERGENCY_MODE
+      value: "true"
+    - name: ACCESS_LEVEL
+      value: "unrestricted"
+
+---
+# Secret for Tenant A Database
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tenant-a-db-secret
+  namespace: tenant-a
+type: Opaque
+data:
+  password: dGVuYW50LWEtc3VwZXItc2VjdXJlLXBhc3N3b3JkLTEyMw==  # base64 encoded
+
+---
+# Testing Commands for Production Multi-Tenancy:
+
+# Phase 1: Node Preparation
+# 1. Label and taint nodes for tenants:
+#    kubectl label node <node1> tenant=tenant-a customer=tenant-a node-type=frontend
+#    kubectl taint node <node1> customer=tenant-a:NoExecute
+#    
+#    kubectl label node <node2> tenant=tenant-a customer=tenant-a node-type=database
+#    kubectl taint node <node2> customer=tenant-a:NoExecute workload=database:NoSchedule
+#    
+#    kubectl label node <node3> tenant=tenant-b customer=tenant-b cost-tier=optimized
+#    kubectl taint node <node3> customer=tenant-b:NoSchedule cost-tier=optimized:PreferNoSchedule
+#    
+#    kubectl label node <node4> tier=shared
+#    kubectl taint node <node4> tier=shared:NoSchedule
+
+# Phase 2: Create Namespaces
+# 2. Create tenant namespaces:
+#    kubectl create namespace tenant-a
+#    kubectl create namespace tenant-b
+#    kubectl create namespace shared-services
+#    kubectl create namespace monitoring
+#    kubectl create namespace ops
+
+# Phase 3: Deploy Multi-Tenant Architecture
+# 3. Apply the configuration:
+#    kubectl apply -f 04-production-tenancy.yaml
+
+# Phase 4: Verify Tenant Isolation
+# 4. Check pod placement by tenant:
+#    kubectl get pods -n tenant-a -o wide
+#    kubectl get pods -n tenant-b -o wide
+#    kubectl get pods -n shared-services -o wide
+
+# 5. Verify tenant A pods only on tenant A nodes:
+#    kubectl get pods -l customer=tenant-a -o wide --all-namespaces
+
+# 6. Verify tenant B can use cost-optimized nodes:
+#    kubectl get pods -l customer=tenant-b -o wide --all-namespaces
+
+# Phase 5: Test Shared Infrastructure
+# 7. Verify monitoring DaemonSet runs everywhere:
+#    kubectl get daemonset multi-tenant-monitoring -n monitoring -o wide
+#    kubectl get pods -l app=tenant-monitor -o wide --all-namespaces
+
+# Phase 6: Test Emergency Override
+# 8. Verify emergency pod can schedule anywhere:
+#    kubectl get pod emergency-override-pod -n ops -o wide
+
+# Phase 7: Simulate Tenant Isolation Breach
+# 9. Try to create tenant-a pod without toleration:
+#    kubectl run breach-test --image=nginx --namespace=tenant-a
+#    (Should fail or go to unexpected nodes)
+
+# Phase 8: Test Resource Contention
+# 10. Scale deployments and watch placement:
+#     kubectl scale deployment tenant-a-frontend -n tenant-a --replicas=10
+#     kubectl scale deployment tenant-b-api -n tenant-b --replicas=20
+#     kubectl get pods -o wide --all-namespaces | grep -E "(tenant-a|tenant-b)"
+
+# Cleanup:
+# 11. Remove all tenant taints and labels:
+#     kubectl taint node <node1> customer=tenant-a:NoExecute-
+#     kubectl taint node <node2> customer=tenant-a:NoExecute- workload=database:NoSchedule-
+#     kubectl taint node <node3> customer=tenant-b:NoSchedule- cost-tier=optimized:PreferNoSchedule-
+#     kubectl taint node <node4> tier=shared:NoSchedule-

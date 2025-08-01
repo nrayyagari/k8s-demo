@@ -1,0 +1,277 @@
+# Taint Effects: Understanding NoSchedule vs PreferNoSchedule vs NoExecute
+# WHY: Different enforcement levels for different situations
+# PATTERN: Soft hints → Hard blocks → Immediate eviction
+
+---
+# Scenario Setup: Three different taint effects on different nodes
+# Run these commands to set up the test environment:
+#   kubectl taint nodes <node1> performance=high:NoSchedule
+#   kubectl taint nodes <node2> cost-optimized=spot:PreferNoSchedule  
+#   kubectl taint nodes <node3> maintenance=urgent:NoExecute
+
+---
+# Effect 1: NoSchedule - Hard Block for New Pods
+# Existing pods stay, new pods without toleration are rejected
+apiVersion: v1
+kind: Pod
+metadata:
+  name: high-performance-app
+  labels:
+    app: compute-intensive
+    performance: high
+spec:
+  tolerations:
+  - key: performance
+    operator: Equal
+    value: high
+    effect: NoSchedule
+  containers:
+  - name: cpu-intensive
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "500m"      # High CPU request
+      limits:
+        memory: "512Mi"
+        cpu: "1000m"
+    env:
+    - name: WORKLOAD_TYPE
+      value: "high-performance"
+
+---
+# Pod that CANNOT tolerate high performance requirement
+apiVersion: v1
+kind: Pod
+metadata:
+  name: blocked-app
+  labels:
+    app: regular
+spec:
+  # NO toleration for performance=high:NoSchedule
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+  # This pod will be REJECTED by nodes with performance=high:NoSchedule
+
+---
+# Effect 2: PreferNoSchedule - Soft Avoidance
+# Scheduler will try to avoid but will place if necessary
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cost-sensitive-app
+  labels:
+    app: batch-job
+    cost-tier: optimized
+spec:
+  tolerations:
+  - key: cost-optimized
+    operator: Equal
+    value: spot
+    effect: PreferNoSchedule
+  containers:
+  - name: batch-processor
+    image: busybox:1.35
+    command: ['sh', '-c', 'echo "Processing batch job..."; sleep 300']
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+    env:
+    - name: JOB_TYPE
+      value: "batch-processing"
+    - name: FAULT_TOLERANT
+      value: "true"
+
+---
+# Pod without spot toleration - will avoid spot nodes if possible
+apiVersion: v1
+kind: Pod
+metadata:
+  name: regular-app-avoid-spot
+  labels:
+    app: web-service
+spec:
+  # NO toleration for cost-optimized=spot:PreferNoSchedule
+  # Scheduler will avoid spot nodes but use them if no choice
+  containers:
+  - name: web-server
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+    ports:
+    - containerPort: 80
+
+---
+# Effect 3: NoExecute - Immediate Eviction
+# Existing pods WITHOUT toleration are evicted immediately
+apiVersion: v1
+kind: Pod
+metadata:
+  name: critical-system-pod
+  labels:
+    app: system-critical
+    maintenance-safe: "true"
+spec:
+  tolerations:
+  - key: maintenance
+    operator: Equal
+    value: urgent
+    effect: NoExecute
+    tolerationSeconds: 120    # Grace period: 2 minutes before eviction
+  containers:
+  - name: critical-service
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+    env:
+    - name: SERVICE_TYPE
+      value: "critical-system"
+    - name: GRACEFUL_SHUTDOWN
+      value: "true"
+    lifecycle:
+      preStop:
+        exec:
+          command: ['sh', '-c', 'echo "Graceful shutdown initiated"; sleep 10']
+
+---
+# Pod that will be EVICTED when maintenance taint is applied
+apiVersion: v1
+kind: Pod
+metadata:
+  name: eviction-target
+  labels:
+    app: non-critical
+spec:
+  # NO toleration for maintenance=urgent:NoExecute
+  # This pod will be EVICTED immediately when taint is applied
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+    env:
+    - name: MAINTENANCE_SAFE
+      value: "false"
+
+---
+# Deployment with mixed tolerations - shows real-world patterns
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flexible-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: flexible-service
+  template:
+    metadata:
+      labels:
+        app: flexible-service
+    spec:
+      tolerations:
+      # Can run on high-performance nodes
+      - key: performance
+        operator: Equal
+        value: high
+        effect: NoSchedule
+      # Prefers to avoid spot instances but will use them
+      - key: cost-optimized
+        operator: Equal
+        value: spot
+        effect: PreferNoSchedule
+      # Can handle short maintenance windows
+      - key: maintenance
+        operator: Equal
+        value: urgent
+        effect: NoExecute
+        tolerationSeconds: 300  # 5 minutes grace period
+      containers:
+      - name: service
+        image: nginx:1.21
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        ports:
+        - containerPort: 80
+
+---
+# Testing Commands and Expected Behavior:
+
+# Setup Phase:
+# 1. Apply all pods:
+#    kubectl apply -f 02-taint-effects.yaml
+
+# 2. Verify all pods are running:
+#    kubectl get pods -o wide
+
+# Testing NoSchedule Effect:
+# 3. Taint a node with NoSchedule:
+#    kubectl taint nodes <node1> performance=high:NoSchedule
+
+# 4. Delete and recreate to test:
+#    kubectl delete pod high-performance-app blocked-app
+#    kubectl apply -f 02-taint-effects.yaml
+
+# 5. Check results:
+#    kubectl get pods -o wide
+#    Expected: high-performance-app schedules, blocked-app is pending
+
+# Testing PreferNoSchedule Effect:
+# 6. Taint a node with PreferNoSchedule:
+#    kubectl taint nodes <node2> cost-optimized=spot:PreferNoSchedule
+
+# 7. Create multiple pods to force placement:
+#    kubectl scale deployment flexible-service --replicas=10
+
+# 8. Check distribution:
+#    kubectl get pods -o wide
+#    Expected: Pods avoid spot node but some may end up there
+
+# Testing NoExecute Effect:
+# 9. Taint a node with NoExecute (WARNING: will evict pods):
+#    kubectl taint nodes <node3> maintenance=urgent:NoExecute
+
+# 10. Watch evictions happen:
+#     kubectl get pods -w
+#     Expected: Pods without tolerations are evicted immediately
+
+# 11. Check events:
+#     kubectl get events --sort-by='.lastTimestamp' | head -20
+
+# Cleanup:
+# 12. Remove all taints:
+#     kubectl taint nodes <node1> performance=high:NoSchedule-
+#     kubectl taint nodes <node2> cost-optimized=spot:PreferNoSchedule-
+#     kubectl taint nodes <node3> maintenance=urgent:NoExecute-

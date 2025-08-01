@@ -1,0 +1,160 @@
+# SIMPLE TAINTS AND TOLERATIONS: Start Here
+# Basic examples to understand the bouncer pattern
+
+---
+# 1. Regular pod - no special permissions
+apiVersion: v1
+kind: Pod
+metadata:
+  name: regular-pod  
+  labels:
+    app: regular
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+# No tolerations = rejected by tainted nodes
+
+---
+# 2. Special pod - has the right credentials  
+apiVersion: v1
+kind: Pod
+metadata:
+  name: special-pod
+  labels:
+    app: special
+spec:
+  # This toleration is like a VIP pass
+  tolerations:
+  - key: special-node
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# 3. System pod - universal access pass
+apiVersion: v1  
+kind: Pod
+metadata:
+  name: system-pod
+  labels:
+    app: monitoring
+spec:
+  # Can run anywhere regardless of taints
+  tolerations:
+  - operator: Exists
+    effect: NoSchedule
+  - operator: Exists
+    effect: PreferNoSchedule
+  containers:
+  - name: monitor
+    image: busybox:1.35
+    command: ['sleep', '3600']
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "25m"
+
+---
+# 4. Database pod - needs special hardware
+apiVersion: v1
+kind: Pod
+metadata:
+  name: database-pod
+  labels:
+    app: database
+spec:
+  tolerations:
+  - key: workload
+    operator: Equal
+    value: database
+    effect: NoSchedule
+  containers:
+  - name: postgres
+    image: postgres:13
+    env:
+    - name: POSTGRES_PASSWORD
+      value: "password123"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+
+---
+# 5. Flexible pod - multiple tolerations
+apiVersion: v1
+kind: Pod  
+metadata:
+  name: flexible-pod
+  labels:
+    app: flexible
+spec:
+  tolerations:
+  # Can run on special nodes
+  - key: special-node
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+  # Can run on database nodes
+  - key: workload
+    operator: Equal
+    value: database
+    effect: NoSchedule
+  # Can handle maintenance
+  - key: maintenance
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: nginx
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# Quick Test Guide:
+
+# Step 1: Apply all pods
+#   kubectl apply -f SIMPLE-TAINTS.yaml
+
+# Step 2: Check where they land (all should be running)
+#   kubectl get pods -o wide
+
+# Step 3: Taint a node to make it special
+#   kubectl taint nodes <node-name> special-node=true:NoSchedule
+
+# Step 4: Delete and recreate pods to see the effect
+#   kubectl delete pod regular-pod special-pod
+#   kubectl apply -f SIMPLE-TAINTS.yaml
+
+# Step 5: Check results
+#   kubectl get pods -o wide
+#   # regular-pod: should be Pending or on different node
+#   # special-pod: can schedule on tainted node
+
+# Step 6: Try more taints
+#   kubectl taint nodes <node-name> workload=database:NoSchedule
+
+# Step 7: See how different pods react
+#   kubectl delete pod database-pod flexible-pod
+#   kubectl apply -f SIMPLE-TAINTS.yaml
+#   kubectl get pods -o wide
+
+# Step 8: Clean up taints
+#   kubectl taint nodes <node-name> special-node=true:NoSchedule-
+#   kubectl taint nodes <node-name> workload=database:NoSchedule-
+
+# Remember: Taint = Node says "I'm selective"
+#          Toleration = Pod says "I can handle it"

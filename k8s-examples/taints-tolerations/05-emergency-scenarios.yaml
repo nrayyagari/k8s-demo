@@ -1,0 +1,465 @@
+# Emergency Scenarios: Production Crisis Management with Taints
+# WHY: Handle node failures, maintenance windows, and resource emergencies
+# PATTERN: Graceful degradation → Emergency procedures → Recovery operations
+
+---
+# Scenario 1: URGENT NODE MAINTENANCE
+# Problem: Critical security patch needed on production nodes at 2AM
+# Solution: Controlled pod evacuation with grace periods
+
+# Pre-maintenance preparation pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: maintenance-preparation
+  labels:
+    app: maintenance-prep
+    priority: system
+spec:
+  # Can handle maintenance scenarios
+  tolerations:
+  - key: maintenance
+    operator: Equal
+    value: preparing
+    effect: NoSchedule
+  - key: maintenance
+    operator: Equal
+    value: urgent
+    effect: NoExecute
+    tolerationSeconds: 300  # 5-minute grace period
+  # Must complete before node maintenance
+  restartPolicy: Never
+  containers:
+  - name: prep-script
+    image: busybox:1.35
+    command: ['sh', '-c']
+    args:
+    - |
+      echo "=== Maintenance Preparation Starting ==="
+      echo "1. Checking running services..."
+      sleep 10
+      echo "2. Creating service health backup..."
+      sleep 15
+      echo "3. Notifying monitoring systems..."
+      sleep 5
+      echo "4. Setting maintenance mode flags..."
+      sleep 10
+      echo "=== Node ready for maintenance ==="
+    resources:
+      requests:
+        memory: "32Mi"
+        cpu: "25m"
+      limits:
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# Scenario 2: CRITICAL SERVICE PROTECTION
+# Problem: Node is failing but critical service must stay running
+# Solution: Service with multiple tolerance levels and fallback
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: critical-payment-service
+  labels:
+    app: payment-processor
+    criticality: tier-1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: payment-processor
+  template:
+    metadata:
+      labels:
+        app: payment-processor
+        criticality: tier-1
+    spec:
+      # Multi-level tolerations for different emergency scenarios
+      tolerations:
+      # Level 1: Normal maintenance (soft)
+      - key: maintenance
+        operator: Equal
+        value: preparing
+        effect: PreferNoSchedule
+      # Level 2: Urgent maintenance (hard with grace)
+      - key: maintenance
+        operator: Equal
+        value: urgent
+        effect: NoExecute
+        tolerationSeconds: 180  # 3 minutes to drain connections
+      # Level 3: Node failure scenarios
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 60   # Quick failover
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 60
+      # Level 4: Resource pressure (stay as long as possible)
+      - key: node.kubernetes.io/memory-pressure
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 600  # 10 minutes
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 300  # 5 minutes
+      # Level 5: Emergency evacuation
+      - key: emergency
+        operator: Equal
+        value: evacuate
+        effect: NoExecute
+        tolerationSeconds: 30   # 30 seconds max
+      containers:
+      - name: payment-api
+        image: nginx:1.21  # Simulate payment service
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+        ports:
+        - containerPort: 80
+        env:
+        - name: SERVICE_TYPE
+          value: "critical-payment"
+        - name: GRACEFUL_SHUTDOWN_TIMEOUT
+          value: "120"
+        # Graceful shutdown configuration
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sh
+              - -c
+              - |
+                echo "Payment service shutdown initiated..."
+                # Drain active connections
+                sleep 30
+                # Close payment processors
+                sleep 15
+                # Final cleanup
+                echo "Payment service shutdown complete"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+
+---
+# Scenario 3: DISASTER RECOVERY POD
+# Problem: Entire cluster region is having issues
+# Solution: Ultra-resilient pod that survives everything
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: disaster-recovery-coordinator
+  labels:
+    app: disaster-recovery
+    priority: emergency
+spec:
+  # ULTIMATE SURVIVAL: Tolerates any possible taint
+  tolerations:
+  # Maintenance scenarios
+  - operator: Exists
+    effect: NoSchedule
+  - operator: Exists  
+    effect: PreferNoSchedule
+  - operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 1800  # 30 minutes grace period
+  # Emergency priority
+  priorityClassName: system-cluster-critical
+  # Multiple restart attempts
+  restartPolicy: Always
+  containers:
+  - name: disaster-coordinator
+    image: nicolaka/netshoot:v0.11
+    command: ['sh', '-c']
+    args:
+    - |
+      while true; do
+        echo "=== DISASTER RECOVERY ACTIVE ==="
+        echo "Timestamp: $(date)"
+        echo "Node: $NODE_NAME"
+        echo "Cluster health check..."
+        
+        # Simulate disaster recovery tasks
+        echo "1. Checking cluster connectivity..."
+        sleep 10
+        echo "2. Verifying backup systems..."
+        sleep 10  
+        echo "3. Monitoring critical services..."
+        sleep 10
+        echo "4. Coordinating with external systems..."
+        sleep 30
+        
+        echo "=== Recovery cycle complete ==="
+      done
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+    env:
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    - name: DISASTER_MODE
+      value: "active"
+    - name: RECOVERY_TIMEOUT
+      value: "1800"
+    # Keep container running despite issues
+    lifecycle:
+      preStop:
+        exec:
+          command:
+          - sh
+          - -c
+          - |
+            echo "DISASTER RECOVERY POD TERMINATING"
+            echo "Initiating emergency handoff procedures..."
+            sleep 10
+
+---
+# Scenario 4: SPOT INSTANCE EMERGENCY HANDLER
+# Problem: Spot instances getting terminated with 2-minute notice
+# Solution: Quick-evacuating pods that handle spot termination
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spot-instance-workload
+  labels:
+    app: batch-processor
+    instance-type: spot
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: batch-processor
+  template:
+    metadata:
+      labels:
+        app: batch-processor
+        instance-type: spot
+    spec:
+      # Spot instance specific tolerations
+      tolerations:
+      # Primary: Can run on spot instances
+      - key: node.kubernetes.io/instance-type
+        operator: Equal
+        value: spot
+        effect: NoSchedule
+      # Secondary: Handle spot termination notice
+      - key: aws.amazon.com/spot
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      # Tertiary: Quick evacuation on termination
+      - key: spot.termination
+        operator: Equal
+        value: "imminent"
+        effect: NoExecute
+        tolerationSeconds: 90  # 1.5 minutes to save work
+      # Quaternary: Node going down
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 30  # Quick failover
+      # Node preference for spot instances
+      nodeSelector:
+        node.kubernetes.io/instance-type: spot
+      containers:
+      - name: batch-worker
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          trap 'echo "SPOT TERMINATION SIGNAL RECEIVED"; save_work; exit 0' TERM
+          save_work() {
+            echo "Saving current work state..."
+            sleep 5
+            echo "Work state saved to persistent storage"
+          }
+          
+          while true; do
+            echo "Processing batch job: $(date)"
+            # Simulate batch processing
+            sleep 30
+          done
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        env:
+        - name: SPOT_INSTANCE
+          value: "true"
+        - name: SAVE_INTERVAL
+          value: "30"
+
+---
+# Scenario 5: MEMORY PRESSURE EMERGENCY
+# Problem: Node running out of memory, need to shed non-critical workloads
+# Solution: Tiered eviction with different tolerance levels
+
+# High-priority service that stays during memory pressure
+apiVersion: v1
+kind: Pod
+metadata:
+  name: memory-pressure-survivor
+  labels:
+    app: essential-service
+    memory-priority: high
+spec:
+  tolerations:
+  # Can handle memory pressure for extended periods
+  - key: node.kubernetes.io/memory-pressure
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 1800  # 30 minutes
+  # Also handle other resource pressures
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 900   # 15 minutes
+  containers:
+  - name: essential-app
+    image: nginx:1.21
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"    # Conservative memory limit
+        cpu: "100m"
+    env:
+    - name: MEMORY_EFFICIENT_MODE
+      value: "true"
+
+# Low-priority service that evacuates quickly during memory pressure
+apiVersion: v1
+kind: Pod
+metadata:
+  name: memory-pressure-evacuee
+  labels:
+    app: batch-service  
+    memory-priority: low
+spec:
+  tolerations:
+  # Evacuates quickly when memory pressure occurs
+  - key: node.kubernetes.io/memory-pressure
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 60    # 1 minute only
+  containers:
+  - name: batch-worker
+    image: busybox:1.35
+    command: ['sleep', '3600']
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+    env:
+    - name: EVICTION_PRIORITY
+      value: "low"
+
+---
+# Emergency Commands Reference:
+
+# EMERGENCY PROCEDURE 1: Urgent Node Maintenance
+# Step 1: Mark node for maintenance preparation
+#   kubectl taint nodes <node-name> maintenance=preparing:PreferNoSchedule
+
+# Step 2: Wait for pods to naturally migrate (optional)
+#   sleep 300
+
+# Step 3: Force evacuation with grace period  
+#   kubectl taint nodes <node-name> maintenance=urgent:NoExecute
+
+# Step 4: Monitor evacuation progress
+#   kubectl get pods -o wide | grep <node-name>
+#   kubectl get events --sort-by='.lastTimestamp' | head -20
+
+# Step 5: After maintenance, remove taints
+#   kubectl taint nodes <node-name> maintenance=preparing:PreferNoSchedule-
+#   kubectl taint nodes <node-name> maintenance=urgent:NoExecute-
+
+# EMERGENCY PROCEDURE 2: Spot Instance Termination  
+# Step 1: AWS sends termination notice (automated)
+#   kubectl taint nodes <spot-node> spot.termination=imminent:NoExecute
+
+# Step 2: Monitor workload evacuation
+#   kubectl get pods -o wide | grep <spot-node>
+
+# Step 3: Verify workloads moved to other nodes
+#   kubectl get pods -l instance-type=spot -o wide
+
+# EMERGENCY PROCEDURE 3: Memory Pressure Crisis
+# Step 1: Node starts experiencing memory pressure (automatic)
+#   # Kubernetes automatically adds: node.kubernetes.io/memory-pressure:NoSchedule
+
+# Step 2: Force low-priority pod eviction
+#   kubectl taint nodes <node-name> node.kubernetes.io/memory-pressure:NoExecute
+
+# Step 3: Monitor evictions and memory recovery
+#   kubectl top nodes
+#   kubectl describe node <node-name> | grep -A 10 Conditions
+
+# EMERGENCY PROCEDURE 4: Complete Cluster Evacuation
+# Step 1: Mark all nodes for emergency evacuation
+#   kubectl taint nodes --all emergency=evacuate:NoExecute
+
+# Step 2: Monitor cluster-wide evacuation
+#   kubectl get pods --all-namespaces -o wide
+
+# Step 3: Only disaster recovery and system-critical pods should remain
+
+# TESTING COMMANDS:
+
+# Test 1: Apply all emergency scenarios
+#   kubectl apply -f 05-emergency-scenarios.yaml
+
+# Test 2: Simulate maintenance emergency
+#   kubectl taint nodes <test-node> maintenance=urgent:NoExecute
+#   kubectl get pods -o wide -w
+
+# Test 3: Simulate spot termination
+#   kubectl taint nodes <spot-node> spot.termination=imminent:NoExecute
+#   kubectl get pods -l instance-type=spot -w
+
+# Test 4: Simulate memory pressure
+#   kubectl taint nodes <node> node.kubernetes.io/memory-pressure:NoExecute
+#   kubectl get pods -l memory-priority=low -w
+
+# Test 5: Ultimate disaster test
+#   kubectl taint nodes --all emergency=evacuate:NoExecute
+#   kubectl get pods --all-namespaces -o wide
+
+# RECOVERY COMMANDS:
+# Remove all emergency taints
+#   kubectl taint nodes --all maintenance-
+#   kubectl taint nodes --all spot.termination-
+#   kubectl taint nodes --all emergency-
