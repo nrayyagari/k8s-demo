@@ -1,0 +1,174 @@
+# SIMPLE STORAGE - Complete Storage Example
+# Purpose: Demonstrate StorageClass → PVC → Pod workflow
+
+# This file shows all three storage components working together:
+# 1. StorageClass (defines available storage types)
+# 2. PVC (requests storage from StorageClass)  
+# 3. Pod (uses PVC for persistent storage)
+
+# =================== STORAGECLASS ===================
+# Defines what storage types are available
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: demo-storage
+  labels:
+    storage-demo: "true"
+provisioner: k8s.io/minikube-hostpath      # For local testing
+parameters:
+  type: local                              # Storage type
+reclaimPolicy: Delete                      # Clean up when PVC deleted
+allowVolumeExpansion: true                 # Allow storage growth
+
+---
+# =================== PVC ===================  
+# Requests storage from the StorageClass
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: demo-storage-pvc
+  labels:
+    storage-demo: "true"
+spec:
+  accessModes:
+  - ReadWriteOnce                          # Single pod access
+  resources:
+    requests:
+      storage: 5Gi                         # Request 5GB storage
+  storageClassName: demo-storage           # Use our StorageClass above
+
+---
+# =================== POD ===================
+# Uses the PVC for persistent storage
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-demo-pod
+  labels:
+    storage-demo: "true"
+spec:
+  containers:
+  - name: app
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: persistent-storage
+      mountPath: /usr/share/nginx/html     # Where nginx serves files
+  volumes:
+  - name: persistent-storage
+    persistentVolumeClaim:
+      claimName: demo-storage-pvc          # Reference our PVC
+
+---
+# =================== WORKFLOW EXPLANATION ===================
+
+# What happens when you apply this file:
+# 
+# 1. StorageClass Created
+#    - Defines "demo-storage" as available storage type
+#    - Uses local provisioner for testing
+#    - Sets policies (delete on cleanup, allow expansion)
+#
+# 2. PVC Created  
+#    - Requests 5Gi storage from "demo-storage" StorageClass
+#    - StorageClass provisioner creates actual storage (PV)
+#    - PVC automatically binds to the new PV
+#
+# 3. Pod Created
+#    - References the PVC for persistent storage
+#    - Mounts storage at /usr/share/nginx/html
+#    - Can read/write files that persist beyond pod lifecycle
+
+# =================== QUICK COMMANDS ===================
+
+# Deploy everything:
+# kubectl apply -f SIMPLE-STORAGE.yaml
+
+# Check the storage stack:
+# kubectl get storageclass demo-storage
+# kubectl get pvc demo-storage-pvc  
+# kubectl get pv
+# kubectl get pod storage-demo-pod
+
+# Test persistence:
+# kubectl exec storage-demo-pod -- sh -c 'echo "Hello Storage" > /usr/share/nginx/html/test.txt'
+# kubectl exec storage-demo-pod -- cat /usr/share/nginx/html/test.txt
+
+# Delete and recreate pod (data should persist):
+# kubectl delete pod storage-demo-pod
+# kubectl apply -f SIMPLE-STORAGE.yaml
+# kubectl exec storage-demo-pod -- cat /usr/share/nginx/html/test.txt
+
+# Clean up everything:
+# kubectl delete -f SIMPLE-STORAGE.yaml
+
+# =================== KEY CONCEPTS ===================
+
+# StorageClass = Storage Menu
+# - Admin creates these
+# - Defines what storage types are available
+# - Handles automatic PV creation
+
+# PVC = Storage Order  
+# - Developer creates these
+# - Requests storage from StorageClass
+# - Specifies size and access requirements
+
+# PV = Actual Storage
+# - Created automatically by StorageClass
+# - Represents real storage (disk, cloud volume, etc.)
+# - Binds to PVC automatically
+
+# Pod = Storage Consumer
+# - Uses PVC to access persistent storage
+# - Mounts storage as volumes
+# - Data persists beyond pod lifecycle
+
+# =================== REAL-WORLD USAGE ===================
+
+# This pattern works for:
+# ✅ Database storage (PostgreSQL, MySQL data directories)
+# ✅ File uploads (user-generated content)
+# ✅ Configuration storage (app settings, logs)
+# ✅ Shared storage (multiple pods accessing same files)
+
+# Production differences:
+# - Use cloud StorageClasses (AWS EBS, Google Persistent Disk, etc.)
+# - Specify appropriate storage sizes
+# - Choose correct access modes (ReadWriteOnce vs ReadWriteMany)
+# - Set proper reclaim policies (Retain for important data)
+
+# =================== TROUBLESHOOTING ===================
+
+# PVC stuck in Pending:
+# - Check: kubectl describe pvc demo-storage-pvc
+# - Causes: StorageClass missing, no available storage, quota exceeded
+
+# Pod can't mount PVC:
+# - Check: kubectl describe pod storage-demo-pod
+# - Causes: PVC not bound, wrong namespace, access mode conflicts
+
+# Data lost:
+# - Check reclaim policy: kubectl get storageclass demo-storage -o yaml
+# - Understand: Delete policy removes data when PVC deleted
+
+# =================== NEXT STEPS ===================
+
+# 1. Explore specific storage types:
+#    - storage/pv/ - Learn about Persistent Volumes
+#    - storage/pvc/ - Learn about Persistent Volume Claims  
+#    - storage/storageclass/ - Learn about Storage Classes
+
+# 2. Try different scenarios:
+#    - Database storage (single pod, high performance)
+#    - Shared files (multiple pods, shared access)
+#    - Temporary storage (fast local storage)
+
+# 3. Production considerations:
+#    - Backup and recovery strategies
+#    - Storage monitoring and alerting
+#    - Cost optimization with storage tiers

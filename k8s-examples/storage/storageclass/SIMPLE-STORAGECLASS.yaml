@@ -1,0 +1,56 @@
+# SIMPLE StorageClass - Quick Start Guide
+# Purpose: Basic StorageClass example for understanding dynamic provisioning
+
+# Simple StorageClass for local testing
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: simple-storage
+provisioner: k8s.io/minikube-hostpath      # For minikube/kind testing
+reclaimPolicy: Delete                       # Clean up when PVC deleted
+allowVolumeExpansion: true                  # Allow growing storage
+
+# QUICK COMMANDS:
+
+# 1. Create the StorageClass:
+#    kubectl apply -f SIMPLE-STORAGECLASS.yaml
+
+# 2. Check StorageClass:
+#    kubectl get storageclass simple-storage
+#    kubectl describe storageclass simple-storage
+
+# 3. Create PVC using this StorageClass:
+#    apiVersion: v1
+#    kind: PersistentVolumeClaim
+#    metadata:
+#      name: simple-pvc
+#    spec:
+#      accessModes: [ReadWriteOnce]
+#      resources:
+#        requests:
+#          storage: 5Gi
+#      storageClassName: simple-storage
+
+# 4. Apply PVC and watch dynamic provisioning:
+#    kubectl apply -f simple-pvc.yaml
+#    kubectl get pvc simple-pvc -w
+
+# 5. Check automatically created PV:
+#    kubectl get pv
+
+# WHAT THIS DEMONSTRATES:
+# ✅ StorageClass defines storage types available
+# ✅ PVC with storageClassName triggers automatic PV creation
+# ✅ No manual PV creation needed
+# ✅ Storage automatically cleaned up when PVC deleted
+
+# PRODUCTION VERSION:
+# For real clusters, use cloud-specific provisioners like:
+# - ebs.csi.aws.com (AWS)
+# - pd.csi.storage.gke.io (Google Cloud)
+# - disk.csi.azure.com (Azure)
+
+# NEXT STEPS:
+# - Look at cloud-specific StorageClass examples
+# - Learn about different provisioner parameters
+# - Understand multi-tier storage strategies

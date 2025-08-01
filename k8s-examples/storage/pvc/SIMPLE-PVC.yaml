@@ -1,0 +1,66 @@
+# SIMPLE Persistent Volume Claim - Quick Start Guide
+# Purpose: Basic PVC example to understand storage requests
+
+# Simple storage request
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: simple-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce                    # Single pod access
+  resources:
+    requests:
+      storage: 5Gi                   # Request 5GB storage
+
+---
+# Pod using the storage
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-test-pod
+spec:
+  containers:
+  - name: app
+    image: nginx:alpine
+    volumeMounts:
+    - name: my-storage
+      mountPath: /data               # Where app will store files
+  volumes:
+  - name: my-storage
+    persistentVolumeClaim:
+      claimName: simple-pvc          # Use the PVC above
+
+# QUICK COMMANDS:
+
+# 1. Create PVC and pod:
+#    kubectl apply -f SIMPLE-PVC.yaml
+
+# 2. Check PVC status:
+#    kubectl get pvc simple-pvc
+#    kubectl describe pvc simple-pvc
+
+# 3. Test storage works:
+#    kubectl exec storage-test-pod -- sh -c 'echo "Hello Storage" > /data/test.txt'
+#    kubectl exec storage-test-pod -- cat /data/test.txt
+
+# 4. Test persistence (delete and recreate pod):
+#    kubectl delete pod storage-test-pod
+#    kubectl apply -f SIMPLE-PVC.yaml
+#    kubectl exec storage-test-pod -- cat /data/test.txt
+
+# WHAT THIS DEMONSTRATES:
+# ✅ PVC requests storage without knowing storage details
+# ✅ Pod uses PVC to access persistent storage
+# ✅ Data persists even when pod is deleted/recreated
+# ✅ Kubernetes handles the PVC-to-PV binding automatically
+
+# TROUBLESHOOTING:
+# - PVC shows "Pending" → Check if you have available storage or StorageClass
+# - Pod can't start → Check PVC is bound (kubectl get pvc)
+# - Data lost → Check PV reclaim policy and storage type
+
+# NEXT STEPS:
+# - Look at database-specific PVC examples
+# - Learn about StorageClasses for different storage types
+# - Understand shared storage with ReadWriteMany

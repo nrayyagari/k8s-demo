@@ -1,0 +1,185 @@
+# Local Storage Persistent Volume Examples
+# Purpose: Demonstrate local storage PVs using host paths and local volumes
+
+# Basic HostPath PV - Simple local storage
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-hostpath-pv
+  labels:
+    storage-type: local
+    performance: high
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce                    # Only one pod can use this
+  persistentVolumeReclaimPolicy: Retain  # Keep data when PVC deleted
+  hostPath:
+    path: /data/local-storage        # Directory on the host node
+    type: DirectoryOrCreate          # Create directory if it doesn't exist
+
+---
+# Local Volume PV - Better local storage (production-ready)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-volume-pv
+  labels:
+    storage-type: local-ssd
+    performance: very-high
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete  # Clean up when done (test data)
+  volumeMode: Filesystem
+  local:
+    path: /mnt/ssd-storage           # Dedicated mount point
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - worker-node-1            # Tied to specific node
+
+---
+# High-Performance Local Storage for Databases
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: database-local-pv
+  labels:
+    app: database
+    performance-tier: premium
+    backup-required: "true"
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain    # Never lose database data
+  local:
+    path: /mnt/database-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: node-type
+          operator: In
+          values:
+          - database-optimized       # Only on database nodes
+  mountOptions:
+  - noatime                          # Performance optimization
+
+# HOW LOCAL STORAGE WORKS:
+
+# HostPath vs Local Volume:
+# - hostPath: Simple, for testing, less reliable
+# - local: Production-ready, better lifecycle management
+
+# Node Affinity:
+# - Local storage is tied to specific nodes
+# - Pod using this PV must run on the same node
+# - If node fails, data is lost (unless replicated)
+
+# PROS OF LOCAL STORAGE:
+# ✅ Highest performance (no network overhead)
+# ✅ Lowest latency
+# ✅ Best for databases, caches, high-IOPS workloads
+# ✅ Cost-effective (uses existing node storage)
+
+# CONS OF LOCAL STORAGE:
+# ❌ Data lost if node fails
+# ❌ Pod tied to specific node (reduces scheduling flexibility)
+# ❌ No sharing between nodes
+# ❌ Manual storage management required
+
+# WHEN TO USE LOCAL STORAGE:
+# ✅ High-performance databases (with replication)
+# ✅ Caching layers (data can be rebuilt)
+# ✅ Temporary processing storage
+# ✅ Applications that can handle node failures
+
+# WHEN NOT TO USE LOCAL STORAGE:
+# ❌ Critical single-instance databases
+# ❌ Shared storage requirements
+# ❌ Applications without replication
+# ❌ Data that cannot be rebuilt
+
+# TESTING COMMANDS:
+
+# 1. Create the PVs:
+# kubectl apply -f 01-local-pv.yaml
+
+# 2. Check PV status:
+# kubectl get pv -l storage-type=local
+
+# 3. See detailed info:
+# kubectl describe pv local-hostpath-pv
+
+# 4. Check node affinity:
+# kubectl get pv local-volume-pv -o yaml | grep -A 10 nodeAffinity
+
+# 5. Create a test PVC to claim local storage:
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: test-local-pvc
+# spec:
+#   accessModes: [ReadWriteOnce]
+#   resources:
+#     requests:
+#       storage: 5Gi
+#   selector:
+#     matchLabels:
+#       storage-type: local
+
+# 6. Check binding:
+# kubectl get pvc test-local-pvc
+# kubectl get pv local-hostpath-pv
+
+# PRODUCTION SETUP CONSIDERATIONS:
+
+# 1. Prepare Node Storage:
+# sudo mkdir -p /mnt/database-storage
+# sudo chown -R 999:999 /mnt/database-storage  # For postgres
+# sudo chmod 755 /mnt/database-storage
+
+# 2. Label Nodes:
+# kubectl label node worker-node-1 node-type=database-optimized
+
+# 3. Monitor Storage Usage:
+# df -h /mnt/database-storage
+
+# 4. Backup Strategy:
+# - Database-level backups (pg_dump, mysqldump)
+# - Application-level replication
+# - Regular snapshots of host directories
+
+# PERFORMANCE OPTIMIZATION:
+
+# Mount Options:
+# - noatime: Don't update access times (faster)
+# - nodiratime: Don't update directory access times
+# - barrier=0: Disable write barriers (risky but faster)
+
+# File System Selection:
+# - ext4: Good general purpose
+# - xfs: Better for large files
+# - btrfs: Advanced features but more complex
+
+# SECURITY CONSIDERATIONS:
+
+# Directory Permissions:
+# - Ensure proper ownership (matching container user)
+# - Use appropriate file permissions
+# - Consider SELinux/AppArmor policies
+
+# Example Security Setup:
+# sudo mkdir -p /data/secure-storage
+# sudo chown 1001:1001 /data/secure-storage  # Match app user ID
+# sudo chmod 700 /data/secure-storage         # Owner only access

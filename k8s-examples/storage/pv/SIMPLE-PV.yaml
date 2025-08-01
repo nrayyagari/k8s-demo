@@ -1,0 +1,76 @@
+# SIMPLE Persistent Volume - Quick Start Guide
+# Purpose: Basic PV example to understand persistent storage concepts
+
+# Simple local storage PV
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: simple-pv
+  labels:
+    type: local
+spec:
+  capacity:
+    storage: 5Gi                      # Size of storage
+  accessModes:
+  - ReadWriteOnce                     # Single pod can use it
+  persistentVolumeReclaimPolicy: Retain  # Keep data when PVC deleted
+  hostPath:
+    path: /tmp/simple-pv-data         # Directory on node (for testing)
+
+# QUICK COMMANDS:
+
+# 1. Create the PV:
+#    kubectl apply -f SIMPLE-PV.yaml
+
+# 2. Check PV status:
+#    kubectl get pv simple-pv
+#    kubectl describe pv simple-pv
+
+# 3. Create a PVC to use this PV:
+#    apiVersion: v1
+#    kind: PersistentVolumeClaim
+#    metadata:
+#      name: simple-pvc
+#    spec:
+#      accessModes: [ReadWriteOnce]
+#      resources:
+#        requests:
+#          storage: 3Gi
+
+# 4. Apply PVC and check binding:
+#    kubectl apply -f simple-pvc.yaml
+#    kubectl get pv,pvc
+
+# 5. Use in a pod:
+#    apiVersion: v1
+#    kind: Pod
+#    metadata:
+#      name: test-pod
+#    spec:
+#      containers:
+#      - name: app
+#        image: nginx:alpine
+#        volumeMounts:
+#        - name: storage
+#          mountPath: /data
+#      volumes:
+#      - name: storage
+#        persistentVolumeClaim:
+#          claimName: simple-pvc
+
+# WHAT THIS DEMONSTRATES:
+# ✅ PV provides actual storage (directory on host)
+# ✅ PVC claims the storage (requests from PV)
+# ✅ Pod uses PVC to access storage
+# ✅ Data persists even if pod restarts
+
+# IMPORTANT NOTES:
+# - This uses hostPath (only for testing/development)
+# - Production should use proper storage (NFS, cloud volumes, etc.)
+# - Data is tied to the specific node
+# - If node fails, data is lost
+
+# NEXT STEPS:
+# - Look at other PV examples for production storage
+# - Learn about StorageClasses for dynamic provisioning
+# - Understand PVC patterns in the pvc/ directory

@@ -1,0 +1,226 @@
+# Local Storage StorageClass Examples
+# Purpose: Demonstrate StorageClasses for local node storage
+
+# Basic Local StorageClass - For testing and development
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+  labels:
+    storage-type: local
+    performance: high
+provisioner: kubernetes.io/no-provisioner    # No automatic provisioning
+reclaimPolicy: Delete                         # Clean up when PVC deleted
+volumeBindingMode: WaitForFirstConsumer      # Wait for pod to be scheduled
+allowedTopologies:                           # Restrict to specific nodes
+- matchLabelExpressions:
+  - key: kubernetes.io/hostname
+    values: [worker-node-1, worker-node-2]
+
+---
+# Local NVMe StorageClass - High performance storage
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-nvme
+  annotations:
+    description: "High-performance local NVMe storage"
+    use-case: "Databases, caches, high-IOPS workloads"
+  labels:
+    performance: very-high
+    storage-type: nvme
+    cost-tier: included
+provisioner: kubernetes.io/no-provisioner
+parameters:
+  fsType: xfs                                # XFS for better performance
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowedTopologies:
+- matchLabelExpressions:
+  - key: node-type
+    values: [compute-intensive]             # Only on high-performance nodes
+
+---
+# HostPath StorageClass - For testing only
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: hostpath-storage
+  annotations:
+    description: "Local hostPath storage for testing"
+    warning: "Only for development - data lost if node fails"
+provisioner: k8s.io/minikube-hostpath        # Minikube/kind specific
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+
+# HOW LOCAL STORAGE CLASSES WORK:
+
+# No Automatic Provisioning:
+# - Local StorageClasses don't create storage automatically
+# - Admin must pre-create PersistentVolumes
+# - StorageClass provides classification and policies
+
+# Volume Binding Mode:
+# - WaitForFirstConsumer: PV binding delayed until pod scheduled
+# - Ensures PV is on same node as pod
+# - Required for local storage
+
+# Allowed Topologies:
+# - Restricts which nodes can provide storage
+# - Uses node labels to define topology
+# - Prevents scheduling on inappropriate nodes
+
+# EXAMPLE: Creating Local PVs for these StorageClasses
+
+# First, prepare nodes with local storage:
+# sudo mkdir -p /mnt/local-storage
+# sudo mkdir -p /mnt/nvme-storage
+# sudo chown -R 1000:1000 /mnt/local-storage
+
+# Then create matching PVs:
+# apiVersion: v1
+# kind: PersistentVolume
+# metadata:
+#   name: local-pv-1
+# spec:
+#   capacity:
+#     storage: 50Gi
+#   accessModes: [ReadWriteOnce]
+#   persistentVolumeReclaimPolicy: Delete
+#   storageClassName: local-storage        # Matches StorageClass
+#   local:
+#     path: /mnt/local-storage
+#   nodeAffinity:
+#     required:
+#       nodeSelectorTerms:
+#       - matchExpressions:
+#         - key: kubernetes.io/hostname
+#           operator: In
+#           values: [worker-node-1]
+
+# USING LOCAL STORAGE CLASSES:
+
+# Create PVC using local StorageClass:
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: local-app-pvc
+# spec:
+#   accessModes: [ReadWriteOnce]
+#   resources:
+#     requests:
+#       storage: 20Gi
+#   storageClassName: local-storage
+
+# Deploy pod using local storage:
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: local-storage-pod
+# spec:
+#   containers:
+#   - name: app
+#     image: postgres:13
+#     volumeMounts:
+#     - name: data
+#       mountPath: /var/lib/postgresql/data
+#   volumes:
+#   - name: data
+#     persistentVolumeClaim:
+#       claimName: local-app-pvc
+
+# TESTING COMMANDS:
+
+# 1. Apply StorageClasses:
+# kubectl apply -f 01-local-storageclass.yaml
+
+# 2. Check StorageClasses:
+# kubectl get storageclass
+# kubectl describe storageclass local-storage
+
+# 3. Label nodes for topology (if needed):
+# kubectl label node worker-node-1 node-type=compute-intensive
+
+# 4. Create test PVC:
+# kubectl apply -f - <<EOF
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: test-local-pvc
+# spec:
+#   accessModes: [ReadWriteOnce]
+#   resources:
+#     requests:
+#       storage: 10Gi
+#   storageClassName: local-storage
+# EOF
+
+# 5. Check PVC status (will be Pending until PV created):
+# kubectl get pvc test-local-pvc
+
+# BENEFITS OF LOCAL STORAGE:
+
+# Performance:
+# ✅ Highest IOPS (direct attached storage)
+# ✅ Lowest latency (no network overhead)
+# ✅ Best throughput (SATA/NVMe speeds)
+
+# Cost:
+# ✅ No additional storage costs
+# ✅ Uses existing node storage
+# ✅ No network storage licensing
+
+# Simplicity:
+# ✅ No complex storage systems
+# ✅ Direct file system access
+# ✅ Standard Linux tools work
+
+# LIMITATIONS OF LOCAL STORAGE:
+
+# Durability:
+# ❌ Data lost if node fails
+# ❌ No built-in replication
+# ❌ Tied to specific hardware
+
+# Scheduling:
+# ❌ Pod must run on storage node
+# ❌ Reduces scheduling flexibility
+# ❌ Node affinity required
+
+# Management:
+# ❌ Manual PV creation required
+# ❌ No automatic provisioning
+# ❌ Admin must manage capacity
+
+# WHEN TO USE LOCAL STORAGE CLASSES:
+
+# ✅ High-performance databases with replication
+# ✅ Caching layers (data can be rebuilt)
+# ✅ Temporary processing storage
+# ✅ Development/testing environments
+# ✅ Applications that handle node failures gracefully
+
+# ❌ Critical single-instance databases
+# ❌ Shared storage requirements
+# ❌ Applications without built-in replication
+# ❌ Multi-zone deployments
+
+# PRODUCTION SETUP CHECKLIST:
+
+# Node Preparation:
+# - Create dedicated mount points
+# - Set appropriate permissions
+# - Monitor disk space
+# - Plan for backup/recovery
+
+# PV Management:
+# - Pre-create PVs for expected capacity
+# - Use appropriate reclaim policies
+# - Monitor PV utilization
+# - Automate PV cleanup
+
+# Application Design:
+# - Implement data replication
+# - Handle node failure scenarios
+# - Plan for data migration
+# - Monitor application health

@@ -1,0 +1,182 @@
+# Basic Persistent Volume Claim Examples
+# Purpose: Demonstrate common PVC patterns for different use cases
+
+# Simple PVC - Basic storage request
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: basic-storage-pvc
+  labels:
+    app: webapp
+    tier: storage
+spec:
+  accessModes:
+  - ReadWriteOnce                    # Single pod can mount this
+  resources:
+    requests:
+      storage: 10Gi                  # Request 10GB of storage
+  storageClassName: ""               # Use default StorageClass
+
+---
+# Application using the basic PVC
+apiVersion: v1
+kind: Pod
+metadata:
+  name: webapp-pod
+  labels:
+    app: webapp
+spec:
+  containers:
+  - name: nginx
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: web-storage
+      mountPath: /usr/share/nginx/html   # Where nginx serves files
+  volumes:
+  - name: web-storage
+    persistentVolumeClaim:
+      claimName: basic-storage-pvc       # Reference the PVC
+
+---
+# PVC with specific StorageClass
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fast-storage-pvc
+  labels:
+    performance: high
+    app: database
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: fast-ssd         # Request specific storage type
+
+---
+# PVC with size planning
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: planned-storage-pvc
+  labels:
+    app: analytics
+    growth-expected: "true"
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi                  # Larger size planning for growth
+  storageClassName: standard-ssd
+
+# HOW PVCs WORK:
+
+# Request Process:
+# 1. Developer creates PVC (this file)
+# 2. Kubernetes looks for matching PV
+# 3. If found: binds PVC to PV
+# 4. If not found + StorageClass exists: creates new PV
+# 5. Pod can now use the PVC
+
+# Binding Requirements:
+# - PV must have compatible access mode
+# - PV must have sufficient capacity (>= requested)
+# - PV must match StorageClass (if specified)
+# - PV must be Available (not already bound)
+
+# TESTING COMMANDS:
+
+# 1. Create the PVCs:
+# kubectl apply -f 01-basic-pvc.yaml
+
+# 2. Check PVC status:
+# kubectl get pvc
+# kubectl describe pvc basic-storage-pvc
+
+# 3. Check if PVC is bound:
+# kubectl get pvc basic-storage-pvc -o wide
+
+# 4. If PVC is Pending, check events:
+# kubectl describe pvc basic-storage-pvc | grep -A 10 Events
+
+# 5. Check pod is running and using storage:
+# kubectl get pod webapp-pod
+# kubectl exec webapp-pod -- df -h
+
+# 6. Test data persistence:
+# kubectl exec webapp-pod -- sh -c 'echo "Hello Storage" > /usr/share/nginx/html/test.txt'
+# kubectl delete pod webapp-pod
+# kubectl apply -f webapp-pod.yaml  # Recreate pod
+# kubectl exec webapp-pod -- cat /usr/share/nginx/html/test.txt
+
+# COMMON PVC STATES:
+
+# Pending: Waiting for suitable PV or dynamic provisioning
+# - Check: kubectl describe pvc <name>
+# - Causes: No matching PV, StorageClass issues, quota exceeded
+
+# Bound: Successfully attached to PV
+# - Ready to use in pods
+# - Check: kubectl get pvc <name> -o wide
+
+# Lost: PV no longer available
+# - Requires manual intervention
+# - Usually indicates storage system issues
+
+# DYNAMIC PROVISIONING EXAMPLE:
+
+# If you have a StorageClass named "aws-gp3":
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: dynamic-pvc
+# spec:
+#   accessModes: [ReadWriteOnce]
+#   resources:
+#     requests:
+#       storage: 15Gi
+#   storageClassName: aws-gp3    # This triggers automatic PV creation
+
+# What happens:
+# 1. PVC created with storageClassName
+# 2. StorageClass provisioner creates AWS EBS volume
+# 3. Kubernetes creates PV representing the EBS volume
+# 4. PVC automatically binds to new PV
+
+# BEST PRACTICES:
+
+# 1. Size Appropriately:
+# - Don't over-request (wastes money)
+# - Don't under-request (app might fail)
+# - Plan for reasonable growth
+
+# 2. Choose Right Access Mode:
+# - ReadWriteOnce: Single pod (most common)
+# - ReadOnlyMany: Multiple readers
+# - ReadWriteMany: Multiple writers (needs special storage)
+
+# 3. Use Labels:
+# - Organize PVCs by app, environment, tier
+# - Helps with monitoring and cleanup
+
+# 4. Specify StorageClass:
+# - Don't rely on defaults for production
+# - Use descriptive StorageClass names
+
+# TROUBLESHOOTING COMMON ISSUES:
+
+# PVC Stuck in Pending:
+# - No suitable PV: Create PV or check StorageClass
+# - StorageClass missing: kubectl get storageclass
+# - Quota exceeded: Check namespace resource quotas
+# - Permissions: Check RBAC for PVC creation
+
+# Pod Can't Mount PVC:
+# - PVC not bound: kubectl get pvc
+# - Wrong namespace: PVC and Pod must be in same namespace
+# - Multiple pods using RWO: Only one pod can use ReadWriteOnce
+# - Node driver issues: Check node storage drivers
