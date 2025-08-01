@@ -1,0 +1,391 @@
+# Simple Jobs Example
+# Purpose: Learn how Jobs run tasks to completion
+# 
+# This example shows:
+# 1. Basic job patterns (single task, parallel, indexed)
+# 2. Failure handling and retry configuration
+# 3. Resource management for batch workloads
+
+---
+# Basic single-task job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-backup
+  annotations:
+    # Job metadata for tracking
+    team.company.com/owner: "platform-team"
+    job.company.com/purpose: "daily-backup"
+    job.company.com/estimated-duration: "10-minutes"
+spec:
+  # Job will complete when 1 pod succeeds
+  completions: 1
+  # Run only 1 pod at a time
+  parallelism: 1
+  
+  # FAILURE HANDLING - Critical for production jobs
+  backoffLimit: 3              # Retry up to 3 times on failure
+  activeDeadlineSeconds: 1800  # Kill job after 30 minutes
+  ttlSecondsAfterFinished: 3600 # Auto-delete after 1 hour
+  
+  template:
+    metadata:
+      annotations:
+        # Prevent pod eviction during backup
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      # CRITICAL: Jobs must use Never or OnFailure
+      # Never = Create new pod on failure
+      # OnFailure = Restart container in same pod
+      restartPolicy: Never
+      
+      containers:
+      - name: backup-runner
+        image: postgres:15-alpine
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Starting backup process..."
+          echo "Backup started at: $(date)"
+          
+          # Simulate backup work
+          sleep 30
+          
+          # Create backup (simplified example)
+          echo "Creating database backup..."
+          pg_dump -h postgres.database.svc.cluster.local -U backup_user -d production > /tmp/backup.sql
+          
+          # Upload to storage (example)
+          echo "Uploading backup to S3..."
+          # aws s3 cp /tmp/backup.sql s3://backups/$(date +%Y%m%d)-backup.sql
+          
+          echo "Backup completed successfully at: $(date)"
+          echo "Job finished - pod will terminate"
+        
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-backup-credentials
+              key: password
+        
+        # Resource limits for batch jobs
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+
+---
+# Parallel processing job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: image-processing
+  annotations:
+    team.company.com/owner: "media-team"
+    job.company.com/type: "batch-processing"
+spec:
+  # Process 20 images total
+  completions: 20
+  # Use 5 workers concurrently
+  parallelism: 5
+  
+  # Each pod will process 4 images (20 total / 5 parallel)
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600  # 1 hour timeout
+  
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: image-processor
+        image: python:3.9-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          import time
+          import random
+          import os
+          
+          # Simulate image processing
+          worker_id = os.environ.get('HOSTNAME', 'unknown')
+          
+          for i in range(4):  # Each pod processes 4 images
+            image_id = random.randint(1000, 9999)
+            print(f"Worker {worker_id}: Processing image {image_id}")
+            
+            # Simulate processing time
+            time.sleep(random.randint(10, 30))
+            
+            print(f"Worker {worker_id}: Image {image_id} processed successfully")
+          
+          print(f"Worker {worker_id}: All images processed - job complete")
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+
+---
+# Indexed job (Kubernetes 1.24+)
+# Each pod gets a unique index for specialized processing
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-analysis
+  annotations:
+    team.company.com/owner: "analytics-team"
+    job.company.com/pattern: "indexed-processing"
+spec:
+  # Process 10 data chunks with unique indexes
+  completions: 10
+  parallelism: 3
+  
+  # INDEXED MODE - Each pod gets unique index
+  completionMode: Indexed
+  
+  backoffLimit: 2
+  activeDeadlineSeconds: 2400  # 40 minutes
+  
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: analyzer
+        image: python:3.9-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          import os
+          import time
+          import random
+          
+          # Get unique job completion index
+          index = os.environ.get('JOB_COMPLETION_INDEX', '0')
+          print(f"Starting analysis for data chunk #{index}")
+          
+          # Different processing based on index
+          chunk_size = 1000 * (int(index) + 1)
+          processing_time = 20 + (int(index) * 5)
+          
+          print(f"Chunk #{index}: Processing {chunk_size} records")
+          print(f"Chunk #{index}: Estimated time {processing_time} seconds")
+          
+          # Simulate analysis work
+          time.sleep(processing_time)
+          
+          # Simulate different outcomes based on index
+          if int(index) % 7 == 0:  # Simulate occasional longer processing
+            print(f"Chunk #{index}: Complex analysis detected, extending processing...")
+            time.sleep(10)
+          
+          print(f"Chunk #{index}: Analysis completed successfully!")
+          print(f"Chunk #{index}: Processed {chunk_size} records")
+        
+        env:
+        # Kubernetes automatically injects this for indexed jobs
+        - name: JOB_COMPLETION_INDEX
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.kubernetes.io/job-completion-index']
+        
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "300m"
+          limits:
+            memory: "4Gi" 
+            cpu: "1.5"
+
+---
+# Database migration job with comprehensive configuration
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: user-migration
+  annotations:
+    team.company.com/owner: "backend-team"
+    team.company.com/slack: "#backend-alerts"
+    migration.company.com/version: "v2.1.0"
+    migration.company.com/rollback-plan: "https://wiki.company.com/migrations/user-v2"
+spec:
+  # Only need one successful completion for migration
+  completions: 1
+  parallelism: 1
+  
+  # Migration-specific settings
+  backoffLimit: 1              # Migrations shouldn't retry automatically
+  activeDeadlineSeconds: 7200  # 2 hour timeout for large migrations
+  ttlSecondsAfterFinished: 86400  # Keep for 24 hours for review
+  
+  template:
+    metadata:
+      annotations:
+        # Critical job - don't evict
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        
+        # Security scanning
+        security.company.com/scan-required: "true"
+    spec:
+      restartPolicy: Never
+      
+      # Use specific service account with migration permissions
+      serviceAccountName: migration-runner
+      
+      containers:
+      - name: migrator
+        image: postgres:15-alpine
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "========================================="
+          echo "Starting User Schema Migration v2.1.0"
+          echo "Time: $(date)"
+          echo "========================================="
+          
+          # Pre-migration checks
+          echo "Performing pre-migration validation..."
+          
+          # Check database connectivity
+          psql -h $DB_HOST -d $DB_NAME -c "SELECT version();" || {
+            echo "ERROR: Cannot connect to database"
+            exit 1
+          }
+          
+          # Check table exists
+          TABLE_COUNT=$(psql -h $DB_HOST -d $DB_NAME -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='users';")
+          if [ "$TABLE_COUNT" -eq 0 ]; then
+            echo "ERROR: Users table not found"
+            exit 1
+          fi
+          
+          # Backup current schema
+          echo "Creating backup of current schema..."
+          pg_dump -h $DB_HOST -d $DB_NAME -s > /tmp/schema_backup.sql
+          
+          # Run migration
+          echo "Executing migration..."
+          psql -h $DB_HOST -d $DB_NAME << 'EOF'
+          BEGIN;
+          
+          -- Add new columns
+          ALTER TABLE users ADD COLUMN IF NOT EXISTS created_by VARCHAR(255);
+          ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_by VARCHAR(255);
+          ALTER TABLE users ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1;
+          
+          -- Update existing records
+          UPDATE users SET 
+            created_by = 'system',
+            updated_by = 'system',
+            version = 1
+          WHERE created_by IS NULL;
+          
+          -- Add constraints
+          ALTER TABLE users ALTER COLUMN created_by SET NOT NULL;
+          ALTER TABLE users ALTER COLUMN updated_by SET NOT NULL;
+          
+          COMMIT;
+          EOF
+          
+          # Verify migration
+          echo "Verifying migration results..."
+          NEW_COLUMNS=$(psql -h $DB_HOST -d $DB_NAME -t -c "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='users' AND column_name IN ('created_by', 'updated_by', 'version');")
+          
+          if [ "$NEW_COLUMNS" -ne 3 ]; then
+            echo "ERROR: Migration verification failed"
+            exit 1
+          fi
+          
+          echo "========================================="
+          echo "Migration completed successfully!"
+          echo "Time: $(date)"
+          echo "New columns added: created_by, updated_by, version"
+          echo "========================================="
+        
+        env:
+        - name: DB_HOST
+          value: "postgres.database.svc.cluster.local"
+        - name: DB_NAME
+          value: "production"
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: migration-credentials
+              key: username
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: migration-credentials
+              key: password
+        
+        # Migration jobs may need significant resources
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+        
+        # Add health check for long-running migrations
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "ps aux | grep -v grep | grep psql"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+
+# KEY LEARNING POINTS:
+#
+# 1. JOB COMPLETION:
+#    - completions: How many pods must succeed
+#    - parallelism: How many pods run simultaneously
+#    - completionMode: Indexed for unique processing
+#
+# 2. FAILURE HANDLING:
+#    - backoffLimit: Max retries (default 6)
+#    - activeDeadlineSeconds: Job timeout
+#    - ttlSecondsAfterFinished: Auto-cleanup delay
+#
+# 3. RESTART POLICY:
+#    - Never: Create new pod on failure (recommended)
+#    - OnFailure: Restart container in same pod
+#    - Never use Always (job will never complete)
+#
+# 4. RESOURCE MANAGEMENT:
+#    - Set appropriate requests/limits for batch workloads
+#    - Consider memory usage for data processing
+#    - CPU limits prevent resource hogging
+#
+# 5. PATTERNS:
+#    - Single task: completions=1, parallelism=1
+#    - Parallel: completions>1, parallelism>1
+#    - Work queue: parallelism>1, no completions
+#    - Indexed: completionMode=Indexed for unique tasks
+
+# TESTING COMMANDS:
+#
+# Apply jobs:
+# kubectl apply -f SIMPLE-JOBS.yaml
+#
+# Monitor job progress:
+# kubectl get jobs --watch
+# kubectl describe job data-backup
+#
+# View job pods:
+# kubectl get pods -l job-name=data-backup
+#
+# Check job logs:
+# kubectl logs -l job-name=data-backup
+# kubectl logs -l job-name=image-processing
+#
+# Clean up:
+# kubectl delete job data-backup image-processing data-analysis user-migration

@@ -1,0 +1,480 @@
+# Simple Node Affinity Example
+# Purpose: Learn how to control pod placement using node labels
+# 
+# This example shows:
+# 1. Required vs preferred affinity patterns
+# 2. Node selector operators and expressions
+# 3. Production scheduling scenarios
+
+# FIRST: Label some nodes for testing
+# kubectl label node <node-name> node.company.com/environment=production
+# kubectl label node <node-name> node.company.com/workload-type=web
+# kubectl label node <node-name> accelerator=nvidia-tesla-p100
+
+---
+# Basic required affinity - MUST run on specific nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-workload
+  annotations:
+    team.company.com/owner: "ml-team"
+    scheduling.company.com/requirements: "GPU nodes only"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gpu-workload
+  template:
+    metadata:
+      labels:
+        app: gpu-workload
+    spec:
+      affinity:
+        nodeAffinity:
+          # REQUIRED AFFINITY - Hard constraint
+          # Pod will NOT schedule if no matching node exists
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            # nodeSelectorTerms = OR logic (any term can match)
+            - matchExpressions:
+              # matchExpressions = AND logic (all must match)
+              - key: accelerator
+                operator: In  # Value must be in this list
+                values:
+                - "nvidia-tesla-p100"
+                - "nvidia-tesla-v100"
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                - "p3.2xlarge"
+                - "p3.8xlarge"
+      
+      containers:
+      - name: gpu-app
+        image: tensorflow/tensorflow:latest-gpu
+        command: ["python", "-c"]
+        args:
+        - |
+          import tensorflow as tf
+          print("GPU devices:", tf.config.list_physical_devices('GPU'))
+          print("Running ML workload on GPU node...")
+          import time
+          time.sleep(300)  # Keep running for 5 minutes
+        
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            nvidia.com/gpu: 1    # Request 1 GPU
+            memory: "4Gi"
+            cpu: "2"
+
+---
+# Preferred affinity - TRIES to run on specific nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app-preferred
+  annotations:
+    team.company.com/owner: "platform-team"
+    scheduling.company.com/strategy: "zone-distribution"
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: web-app-preferred
+  template:
+    metadata:
+      labels:
+        app: web-app-preferred
+    spec:
+      affinity:
+        nodeAffinity:
+          # PREFERRED AFFINITY - Soft constraint  
+          # Scheduler tries to match but will schedule elsewhere if needed
+          preferredDuringSchedulingIgnoredDuringExecution:
+          
+          # Weight system: 1-100, higher = stronger preference
+          # Scheduler sums weights for each node to make decision
+          
+          # Strongly prefer zone A (weight 100)
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2a"]
+          
+          # Moderately prefer zone B (weight 80)  
+          - weight: 80
+            preference:
+              matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2b"]
+          
+          # Weakly prefer zone C (weight 60)
+          - weight: 60
+            preference:
+              matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2c"]
+          
+          # Prefer production-ready nodes (weight 90)
+          - weight: 90
+            preference:
+              matchExpressions:
+              - key: node.company.com/environment
+                operator: In
+                values: ["production"]
+      
+      containers:
+      - name: web-server
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# Combined required and preferred affinity
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-workload
+  annotations:
+    team.company.com/owner: "database-team"
+    scheduling.company.com/requirements: "High-memory nodes, prefer SSD"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database-workload
+  template:
+    metadata:
+      labels:
+        app: database-workload
+      annotations:
+        # Don't evict database pods
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      affinity:
+        nodeAffinity:
+          # REQUIRED: Must have sufficient memory
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              # Nodes with high memory (using numeric comparison)
+              - key: node.company.com/memory-gb
+                operator: Gt    # Greater than
+                values: ["32"]  # More than 32GB RAM
+              
+              # Avoid spot instances for databases
+              - key: node.kubernetes.io/lifecycle
+                operator: NotIn  # Not in this list
+                values: ["spot", "preemptible"]
+              
+              # Ensure database workload nodes
+              - key: node.company.com/workload-type
+                operator: In
+                values: ["database", "general"]
+          
+          # PREFERRED: Optimize performance and cost
+          preferredDuringSchedulingIgnoredDuringExecution:
+          # Strongly prefer SSD storage for performance
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node.company.com/storage-type
+                operator: In
+                values: ["ssd", "nvme"]
+          
+          # Prefer dedicated database nodes
+          - weight: 90
+            preference:
+              matchExpressions:
+              - key: node.company.com/workload-type
+                operator: In
+                values: ["database"]
+          
+          # Prefer primary zone for lower latency
+          - weight: 80
+            preference:
+              matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2a"]
+      
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_DB
+          value: "testdb"
+        - name: POSTGRES_USER
+          value: "testuser"
+        - name: POSTGRES_PASSWORD
+          value: "testpass"
+        
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1"
+          limits:
+            memory: "8Gi"
+            cpu: "2"
+
+---
+# Node selector operators demonstration
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: operator-examples
+  annotations:
+    team.company.com/owner: "platform-team"
+    job.company.com/purpose: "demonstrate-operators"
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              # IN OPERATOR - Label value must be in list
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values: ["t3.medium", "t3.large", "m5.large"]
+              
+              # NOT IN OPERATOR - Label value must NOT be in list
+              - key: node.kubernetes.io/lifecycle
+                operator: NotIn
+                values: ["spot", "preemptible"]
+              
+              # EXISTS OPERATOR - Label key must exist (value ignored)
+              - key: node.company.com/environment
+                operator: Exists
+              
+              # DOES NOT EXIST OPERATOR - Label key must NOT exist
+              - key: node.company.com/maintenance
+                operator: DoesNotExist
+          
+          # Numeric operator examples
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              # GREATER THAN - Numeric comparison
+              - key: node.company.com/cpu-cores
+                operator: Gt
+                values: ["4"]
+          
+          - weight: 80
+            preference:
+              matchExpressions:
+              # LESS THAN - Numeric comparison
+              - key: node.company.com/uptime-days
+                operator: Lt
+                values: ["30"]  # Prefer newer nodes
+      
+      containers:
+      - name: demo-job
+        image: busybox:1.35
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Job running on node with labels:"
+          echo "Instance type: $NODE_INSTANCE_TYPE"
+          echo "Zone: $NODE_ZONE"
+          echo "Lifecycle: $NODE_LIFECYCLE"
+          sleep 60
+        
+        env:
+        # Node information available via downward API
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: NODE_INSTANCE_TYPE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['node.kubernetes.io/instance-type']
+      
+      restartPolicy: Never
+
+---
+# Multiple node selector terms (OR logic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flexible-placement
+  annotations:
+    team.company.com/owner: "backend-team"
+    scheduling.company.com/strategy: "flexible-zones"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: flexible-placement
+  template:
+    metadata:
+      labels:
+        app: flexible-placement
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            # Multiple nodeSelectorTerms = OR logic
+            # Pod can schedule if ANY term matches
+            nodeSelectorTerms:
+            
+            # OPTION 1: High-performance nodes in zone A
+            - matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2a"]
+              - key: node.company.com/performance-tier
+                operator: In
+                values: ["high"]
+            
+            # OPTION 2: Medium-performance nodes with SSD in zone B
+            - matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2b"]
+              - key: node.company.com/performance-tier
+                operator: In
+                values: ["medium"]
+              - key: node.company.com/storage-type
+                operator: In
+                values: ["ssd"]
+            
+            # OPTION 3: Any general-purpose node in zone C
+            - matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values: ["us-west-2c"]
+              - key: node.company.com/workload-type
+                operator: In
+                values: ["general"]
+      
+      containers:
+      - name: app
+        image: nginx:1.21-alpine
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# Anti-affinity example - avoid certain nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: avoid-maintenance-nodes
+  annotations:
+    team.company.com/owner: "platform-team"
+    scheduling.company.com/strategy: "avoid-maintenance"
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: avoid-maintenance
+  template:
+    metadata:
+      labels:
+        app: avoid-maintenance
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              # Avoid nodes scheduled for maintenance
+              - key: node.company.com/maintenance-scheduled
+                operator: DoesNotExist
+              
+              # Avoid nodes in maintenance mode
+              - key: node.company.com/status
+                operator: NotIn
+                values: ["draining", "maintenance", "cordoned"]
+              
+              # Only production-ready nodes
+              - key: node.company.com/environment
+                operator: In
+                values: ["production", "staging"]
+      
+      containers:
+      - name: app
+        image: busybox:1.35
+        command: ["sleep", "3600"]
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+
+# KEY LEARNING POINTS:
+#
+# 1. REQUIRED vs PREFERRED:
+#    - requiredDuringSchedulingIgnoredDuringExecution: MUST match (hard constraint)
+#    - preferredDuringSchedulingIgnoredDuringExecution: SHOULD match (soft constraint)
+#
+# 2. NODE SELECTOR TERMS:
+#    - Multiple nodeSelectorTerms = OR logic (any can match)
+#    - matchExpressions within a term = AND logic (all must match)
+#
+# 3. OPERATORS:
+#    - In/NotIn: String matching with lists
+#    - Exists/DoesNotExist: Label key presence
+#    - Gt/Lt: Numeric comparisons
+#
+# 4. WEIGHT SYSTEM:
+#    - Used in preferred affinity (1-100)
+#    - Higher weight = stronger preference
+#    - Scheduler sums weights across nodes
+#
+# 5. COMMON PATTERNS:
+#    - Hardware requirements: GPU, high-memory, SSD
+#    - Zone distribution: Spread across availability zones
+#    - Cost optimization: Prefer spot instances
+#    - Compliance: PCI, HIPAA, geographic restrictions
+
+# TESTING COMMANDS:
+#
+# Label nodes first:
+# kubectl label node <node-name> accelerator=nvidia-tesla-p100
+# kubectl label node <node-name> node.company.com/environment=production
+# kubectl label node <node-name> node.company.com/memory-gb=64
+#
+# Apply node affinity examples:
+# kubectl apply -f SIMPLE-NODE-AFFINITY.yaml
+#
+# Check pod placement:
+# kubectl get pods -o wide
+# kubectl describe pod <pod-name> | grep -A 10 "Node-Selectors"
+#
+# View node labels:
+# kubectl get nodes --show-labels
+# kubectl describe node <node-name>
+#
+# Debug scheduling issues:
+# kubectl describe pod <pod-name>
+# kubectl get events --field-selector involvedObject.name=<pod-name>
+#
+# Clean up:
+# kubectl delete deployment gpu-workload web-app-preferred database-workload flexible-placement avoid-maintenance-nodes
+# kubectl delete job operator-examples

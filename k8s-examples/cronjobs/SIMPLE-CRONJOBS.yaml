@@ -1,0 +1,453 @@
+# Simple CronJobs Example
+# Purpose: Learn how CronJobs schedule and execute tasks automatically
+# 
+# This example shows:
+# 1. Basic cron schedule syntax and patterns
+# 2. Job template configuration and resource management
+# 3. Concurrency control and history management
+
+---
+# Basic database backup cronjob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-backup
+  annotations:
+    # Cronjob metadata for operations
+    team.company.com/owner: "database-team"
+    cronjob.company.com/purpose: "database-backup"
+    cronjob.company.com/criticality: "high"
+    monitoring.company.com/alert-on-failure: "true"
+spec:
+  # CRON SCHEDULE - Critical to get right!
+  # Format: "minute hour day-of-month month day-of-week"  
+  # "0 2 * * *" = Every day at 2:00 AM
+  schedule: "0 2 * * *"
+  
+  # TIMEZONE - Important for business schedules
+  timeZone: "America/New_York"  # EST/EDT automatically handled
+  
+  # CONCURRENCY CONTROL - Prevent overlapping executions
+  concurrencyPolicy: Forbid     # Don't start if previous job still running
+  # Options: Allow (default), Forbid, Replace
+  
+  # JOB HISTORY - Control how many completed jobs to keep
+  successfulJobsHistoryLimit: 7   # Keep 1 week of successful backups
+  failedJobsHistoryLimit: 3       # Keep 3 failed attempts for debugging
+  
+  # STARTUP DEADLINE - How long to wait before giving up on starting
+  startingDeadlineSeconds: 300    # Must start within 5 minutes of schedule
+  
+  # JOB TEMPLATE - Configuration for the Job that gets created
+  jobTemplate:
+    metadata:
+      annotations:
+        backup.company.com/type: "daily-full"
+    spec:
+      # Job timeout - Kill job if it runs too long
+      activeDeadlineSeconds: 7200  # 2 hours maximum
+      
+      # Pod template for the actual work
+      template:
+        metadata:
+          annotations:
+            # Prevent pod eviction during backup
+            cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        spec:
+          # CRITICAL: CronJobs create Jobs, Jobs need proper restartPolicy
+          restartPolicy: OnFailure  # Restart container on failure
+          
+          containers:
+          - name: backup-runner
+            image: postgres:15-alpine
+            command: ["sh", "-c"]
+            args:
+            - |
+              echo "====================================="
+              echo "Starting backup at: $(date)"
+              echo "Database: $DB_NAME"
+              echo "====================================="
+              
+              # Create timestamped backup filename
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              BACKUP_FILE="backup_${DB_NAME}_${TIMESTAMP}.sql.gz"
+              
+              echo "Creating backup: $BACKUP_FILE"
+              
+              # Perform database backup with compression
+              pg_dump -h $DB_HOST -U $DB_USER -d $DB_NAME | gzip > /tmp/$BACKUP_FILE
+              
+              # Check if backup was successful
+              if [ $? -eq 0 ]; then
+                echo "Database dump completed successfully"
+                
+                # Upload to cloud storage (example with AWS S3)
+                echo "Uploading to S3..."
+                # aws s3 cp /tmp/$BACKUP_FILE s3://company-backups/$BACKUP_FILE
+                
+                # Clean up local file
+                rm /tmp/$BACKUP_FILE
+                
+                echo "====================================="
+                echo "Backup completed successfully at: $(date)"
+                echo "File: $BACKUP_FILE"
+                echo "====================================="
+              else
+                echo "ERROR: Database backup failed!"
+                exit 1
+              fi
+            
+            # Environment variables for database connection
+            env:
+            - name: DB_HOST
+              value: "postgres.database.svc.cluster.local"
+            - name: DB_NAME
+              value: "production"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-backup-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-backup-credentials
+                  key: password
+            
+            # Resource limits for backup job
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "1Gi"      # Backups can be memory intensive
+                cpu: "500m"
+
+---
+# Log cleanup cronjob - Runs weekly
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weekly-cleanup
+  annotations:
+    team.company.com/owner: "platform-team"
+    cleanup.company.com/type: "log-rotation"
+spec:
+  # WEEKLY SCHEDULE - Sunday at 3 AM
+  # "0 3 * * 0" = minute=0, hour=3, day=any, month=any, weekday=0(Sunday)
+  schedule: "0 3 * * 0"
+  
+  timeZone: "UTC"  # Use UTC for system maintenance
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 4   # Keep 4 weeks of history
+  failedJobsHistoryLimit: 2
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800  # 30 minutes should be enough for cleanup
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: cleanup-runner
+            image: busybox:1.35
+            command: ["sh", "-c"]
+            args:
+            - |
+              echo "Starting weekly cleanup at: $(date)"
+              
+              # Clean up old log files (older than 30 days)
+              echo "Cleaning up application logs..."
+              find /var/log/apps -name "*.log" -mtime +30 -exec rm {} \;
+              
+              # Clean up compressed logs (older than 90 days)
+              echo "Cleaning up compressed logs..."
+              find /var/log/apps -name "*.log.gz" -mtime +90 -exec rm {} \;
+              
+              # Clean up temporary files
+              echo "Cleaning up temp files..."
+              find /tmp -name "*.tmp" -mtime +7 -exec rm {} \;
+              
+              # Report disk usage after cleanup
+              echo "Cleanup completed. Current disk usage:"
+              df -h /var/log/apps
+              
+              echo "Weekly cleanup completed at: $(date)"
+            
+            # Mount log directories
+            volumeMounts:
+            - name: app-logs
+              mountPath: /var/log/apps
+              
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "50m"
+              limits:
+                memory: "128Mi"
+                cpu: "100m"
+          
+          # Volume for accessing log files
+          volumes:
+          - name: app-logs
+            hostPath:
+              path: /var/log/applications
+
+---
+# Report generation - Runs every weekday morning
+apiVersion: batch/v1
+kind: CronJob  
+metadata:
+  name: daily-report
+  annotations:
+    team.company.com/owner: "analytics-team"
+    report.company.com/type: "daily-summary"
+spec:
+  # WEEKDAY SCHEDULE - Monday through Friday at 7 AM
+  # "0 7 * * 1-5" = 7 AM on weekdays (1=Monday, 5=Friday)
+  schedule: "0 7 * * 1-5"
+  
+  timeZone: "America/New_York"  # Business timezone
+  concurrencyPolicy: Forbid     # Don't overlap report generation
+  successfulJobsHistoryLimit: 5  # Keep work week of reports
+  failedJobsHistoryLimit: 2
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1200  # 20 minutes for report generation
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: report-generator
+            image: python:3.9-slim
+            command: ["python", "-c"]
+            args:
+            - |
+              import datetime
+              import json
+              import time
+              
+              print("Generating daily report...")
+              
+              # Get yesterday's date for report
+              yesterday = datetime.date.today() - datetime.timedelta(days=1)
+              print(f"Report date: {yesterday}")
+              
+              # Simulate report generation
+              print("Collecting metrics...")
+              time.sleep(5)  # Simulate data collection
+              
+              # Generate sample metrics
+              metrics = {
+                  "date": str(yesterday),
+                  "total_users": 1234,
+                  "active_sessions": 567,
+                  "errors": 12,
+                  "response_time_avg": 145.7
+              }
+              
+              print("Report generated:")
+              print(json.dumps(metrics, indent=2))
+              
+              # Simulate sending report
+              print("Sending report via email...")
+              time.sleep(2)
+              
+              print(f"Daily report completed at: {datetime.datetime.now()}")
+            
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "50m" 
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+
+---
+# Health check - Runs every 15 minutes
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: health-check
+  annotations:
+    team.company.com/owner: "monitoring-team"
+    monitoring.company.com/type: "health-check"
+spec:
+  # FREQUENT SCHEDULE - Every 15 minutes
+  # "*/15 * * * *" = Every 15 minutes (0, 15, 30, 45)
+  schedule: "*/15 * * * *"
+  
+  # For frequent jobs, allow some overlap but limit history
+  concurrencyPolicy: Allow          # Allow multiple health checks
+  successfulJobsHistoryLimit: 3     # Don't keep too many (runs frequently)
+  failedJobsHistoryLimit: 5         # Keep more failures for debugging
+  startingDeadlineSeconds: 60       # Must start within 1 minute
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300     # 5 minute timeout
+      template:
+        spec:
+          restartPolicy: Never       # Don't retry health checks
+          containers:
+          - name: health-checker
+            image: curlimages/curl:8.0.1
+            command: ["sh", "-c"]
+            args:
+            - |
+              echo "Starting health check at: $(date)"
+              
+              # Check multiple services
+              SERVICES="api.default.svc.cluster.local:80/health database.default.svc.cluster.local:5432"
+              ALL_HEALTHY=true
+              
+              for service in $SERVICES; do
+                echo "Checking $service..."
+                
+                if curl -f -s --connect-timeout 10 "http://$service" > /dev/null; then
+                  echo "✓ $service is healthy"
+                else
+                  echo "✗ $service is unhealthy"
+                  ALL_HEALTHY=false
+                fi
+              done
+              
+              if [ "$ALL_HEALTHY" = true ]; then
+                echo "All services healthy at: $(date)"
+                exit 0
+              else
+                echo "Some services unhealthy at: $(date)"
+                exit 1  # This will mark the job as failed
+              fi
+            
+            resources:
+              requests:
+                memory: "32Mi"
+                cpu: "10m"
+              limits:
+                memory: "64Mi"
+                cpu: "50m"
+
+---
+# Monthly maintenance - First Sunday of each month
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: monthly-maintenance
+  annotations:
+    team.company.com/owner: "platform-team"
+    maintenance.company.com/type: "system-cleanup"
+spec:
+  # MONTHLY SCHEDULE - First Sunday of month at 4 AM
+  # "0 4 1-7 * 0" = 4 AM on first Sunday (days 1-7, if Sunday)
+  schedule: "0 4 1-7 * 0"
+  
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 12    # Keep full year
+  failedJobsHistoryLimit: 3
+  
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 10800   # 3 hours for maintenance
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: maintenance-runner
+            image: busybox:1.35
+            command: ["sh", "-c"] 
+            args:
+            - |
+              echo "Starting monthly maintenance at: $(date)"
+              
+              # Comprehensive system cleanup
+              echo "Performing deep cleanup..."
+              
+              # Clean up very old logs (6+ months)
+              find /var/log -name "*.log*" -mtime +180 -exec rm {} \;
+              
+              # Clean up old temporary files
+              find /tmp -mtime +30 -exec rm -rf {} \; 2>/dev/null || true
+              
+              # System maintenance tasks
+              echo "System maintenance completed"
+              
+              # Generate maintenance report
+              echo "=== MONTHLY MAINTENANCE REPORT ==="
+              echo "Date: $(date)"
+              echo "Disk usage after cleanup:"
+              df -h
+              echo "================================="
+              
+              echo "Monthly maintenance completed at: $(date)"
+            
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+
+# KEY LEARNING POINTS:
+#
+# 1. CRON SCHEDULE SYNTAX:
+#    Format: "minute hour day-of-month month day-of-week"
+#    - * = any value
+#    - */15 = every 15 units  
+#    - 1-5 = range (Monday to Friday)
+#    - 1,3,5 = specific values
+#    - 0 7 * * 1-5 = 7 AM weekdays
+#
+# 2. CONCURRENCY POLICIES:
+#    - Allow: Multiple jobs can run (default)
+#    - Forbid: Skip if previous job still running (most common)
+#    - Replace: Kill previous job and start new one
+#
+# 3. HISTORY MANAGEMENT:
+#    - successfulJobsHistoryLimit: How many successful jobs to keep
+#    - failedJobsHistoryLimit: How many failed jobs to keep  
+#    - Set to 0 to disable history
+#
+# 4. TIMEZONE HANDLING:
+#    - timeZone: "UTC", "America/New_York", etc.
+#    - Automatically handles daylight saving time
+#    - Use UTC for system tasks, business timezones for reports
+#
+# 5. JOB TEMPLATE:
+#    - CronJob creates Job objects on schedule
+#    - Job template has same structure as regular Jobs
+#    - Must set restartPolicy to Never or OnFailure
+#
+# 6. RESOURCE MANAGEMENT:
+#    - Set appropriate limits for batch workloads
+#    - Consider memory usage for data processing
+#    - Use startingDeadlineSeconds for time-sensitive jobs
+
+# TESTING COMMANDS:
+#
+# Apply cronjobs:
+# kubectl apply -f SIMPLE-CRONJOBS.yaml
+#
+# Monitor cronjobs:
+# kubectl get cronjobs
+# kubectl get cj  # Short form
+#
+# View cronjob details:
+# kubectl describe cronjob daily-backup
+#
+# Check job history:
+# kubectl get jobs
+# kubectl get jobs -l cronjob=daily-backup
+#
+# Manual execution (testing):
+# kubectl create job manual-backup --from=cronjob/daily-backup
+#
+# Suspend/resume cronjob:
+# kubectl patch cronjob daily-backup -p '{"spec":{"suspend":true}}'
+# kubectl patch cronjob daily-backup -p '{"spec":{"suspend":false}}'
+#
+# Clean up:
+# kubectl delete cronjob daily-backup weekly-cleanup daily-report health-check monthly-maintenance

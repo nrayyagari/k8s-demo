@@ -1,0 +1,200 @@
+# Simple Annotations Example
+# Purpose: Learn how annotations provide metadata for tools and humans
+# 
+# This example shows:
+# 1. Basic annotation syntax and format
+# 2. Common production annotation patterns
+# 3. How tools use annotations for configuration
+
+---
+# Deployment with comprehensive annotations
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-annotated
+  # Annotations: Metadata that doesn't affect selection
+  annotations:
+    # TEAM INFORMATION - Critical for operations
+    team.company.com/owner: "platform-team"
+    team.company.com/slack: "#platform-alerts" 
+    team.company.com/email: "platform@company.com"
+    
+    # BUILD INFORMATION - Useful for debugging and rollbacks
+    build.company.com/version: "v1.2.3"
+    build.company.com/commit: "abc123def456789"
+    build.company.com/pipeline: "jenkins-prod-456"
+    build.company.com/timestamp: "2024-01-15T10:30:00Z"
+    
+    # DOCUMENTATION - Links to important resources
+    docs.company.com/runbook: "https://wiki.company.com/webapp-runbook"
+    docs.company.com/api: "https://api-docs.company.com/webapp"
+    docs.company.com/dashboard: "https://grafana.company.com/d/webapp"
+    
+    # COMPLIANCE - Required for audit and security
+    compliance.company.com/data-classification: "internal"
+    compliance.company.com/backup-required: "true"
+    security.company.com/scanned: "true"
+    
+    # KEY INSIGHT: Annotations use key/value pairs just like labels
+    # But they're for metadata, not selection
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: webapp  # Labels are for selection
+  template:
+    metadata:
+      labels:
+        app: webapp
+        version: v1.2.3
+      # Pod annotations - applied to every pod
+      annotations:
+        # MONITORING CONFIGURATION - Tools read these
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+        
+        # SECURITY SCANNING - Configure scan behavior
+        security.company.com/scan-on-create: "true"
+        
+        # CLUSTER AUTOSCALER - Control pod eviction
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 80
+        - containerPort: 8080  # Metrics port
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# Service with tool-specific annotations
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+  annotations:
+    # INGRESS CONTROLLER - Configure routing behavior
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/health-check-path: "/health"
+    
+    # LOAD BALANCER - Cloud provider configuration
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    
+    # MONITORING - Service-level metrics collection
+    prometheus.io/probe: "true"
+    prometheus.io/probe-path: "/health"
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+
+---
+# ConfigMap with metadata annotations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-config
+  annotations:
+    # CONFIG MANAGEMENT - Track configuration changes
+    config.company.com/last-updated: "2024-01-15T10:30:00Z"
+    config.company.com/updated-by: "jane.doe@company.com"
+    config.company.com/change-request: "CR-12345"
+    
+    # VALIDATION - Ensure config integrity
+    config.company.com/validated: "true"
+    config.company.com/validator: "config-checker-v1.0"
+    
+    # PURPOSE - Document what this config is for
+    description: "Application configuration for webapp deployment"
+data:
+  app.properties: |
+    server.port=8080
+    logging.level=INFO
+    metrics.enabled=true
+
+---
+# Secret with security annotations
+apiVersion: v1
+kind: Secret
+metadata:
+  name: webapp-secrets
+  annotations:
+    # SECURITY - Track secret lifecycle
+    security.company.com/created-by: "vault-operator"
+    security.company.com/rotation-due: "2024-04-15"
+    security.company.com/classification: "confidential"
+    
+    # AUDIT - Compliance tracking
+    audit.company.com/access-logged: "true"
+    audit.company.com/retention-period: "7-years"
+type: Opaque
+data:
+  # Base64 encoded values
+  database-password: cGFzc3dvcmQxMjM=  # password123
+  api-key: YWJjZGVmZ2hpams=  # abcdefghijk
+
+# KEY LEARNING POINTS:
+#
+# 1. ANNOTATION FORMAT:
+#    - Key: [prefix/]name (prefix is optional but recommended)
+#    - Value: String (can be JSON for complex data)
+#    - Example: team.company.com/owner: "platform-team"
+#
+# 2. RESERVED PREFIXES:
+#    - kubernetes.io/* - Core Kubernetes
+#    - k8s.io/* - Kubernetes ecosystem
+#    - Don't use these for custom annotations
+#
+# 3. COMMON PATTERNS:
+#    - Team ownership: team.company.com/*
+#    - Build info: build.company.com/*
+#    - Documentation: docs.company.com/*
+#    - Security: security.company.com/*
+#    - Compliance: compliance.company.com/*
+#
+# 4. TOOL INTEGRATION:
+#    - Prometheus: prometheus.io/*
+#    - Ingress: nginx.ingress.kubernetes.io/*
+#    - Cloud providers: service.beta.kubernetes.io/*
+#    - Autoscaler: cluster-autoscaler.kubernetes.io/*
+#
+# 5. BEST PRACTICES:
+#    - Use consistent naming conventions
+#    - Include team/owner information
+#    - Document with links to runbooks/dashboards
+#    - Track build and deployment information
+#    - Add compliance and security metadata
+
+# TESTING COMMANDS:
+#
+# Apply this file:
+# kubectl apply -f SIMPLE-ANNOTATIONS.yaml
+#
+# View annotations:
+# kubectl describe deployment webapp-annotated
+# kubectl get deployment webapp-annotated -o yaml | grep -A 20 annotations
+#
+# Add annotation to running resource:
+# kubectl annotate deployment webapp-annotated environment=production
+#
+# Remove annotation:
+# kubectl annotate deployment webapp-annotated environment-
+#
+# Search by annotation:
+# kubectl get deployments -o json | jq '.items[] | select(.metadata.annotations."team.company.com/owner"=="platform-team")'

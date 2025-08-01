@@ -25,6 +25,10 @@ k8s-examples/
 ├── scheduling/     # Pod scheduling, taints/tolerations, affinity/anti-affinity
 ├── resource-quotas/ # Resource quotas and limits for resource management
 ├── troubleshooting/ # Debugging scenarios and systematic troubleshooting
+├── annotations/    # Metadata for tools and human operators
+├── jobs/           # Batch processing and one-time task execution
+├── cronjobs/       # Scheduled task automation
+├── node-affinity/  # Advanced pod placement control
 └── README.md       # This file
 ```
 
@@ -75,6 +79,22 @@ k8s-examples/
 **11. My application isn't working - how do I debug?** → **Troubleshooting**
 - Problem: Complex systems fail in subtle ways
 - Solution: Systematic debugging approach using the right tools
+
+**12. How do I attach metadata for tools and operations?** → **Annotations**  
+- Problem: Need to store configuration and context that isn't for selection
+- Solution: Annotations provide arbitrary metadata for tools, automation, and humans
+
+**13. How do I run tasks that complete and exit?** → **Jobs**
+- Problem: Need batch processing, migrations, one-time tasks
+- Solution: Jobs run pods to completion with retry and failure handling
+
+**14. How do I automate recurring tasks?** → **CronJobs**
+- Problem: Manual execution of scheduled tasks (backups, reports, cleanup)
+- Solution: CronJobs automatically create Jobs on a schedule
+
+**15. How do I control exactly where my pods run?** → **Node Affinity**
+- Problem: Need specific hardware, compliance, or performance requirements
+- Solution: Node affinity provides precise control over pod placement
 
 ### The 90/10 Rule
 
@@ -142,12 +162,32 @@ kubectl apply -f resource-quotas/SIMPLE-QUOTAS.yaml
 kubectl apply -f troubleshooting/SIMPLE-DEBUG.yaml
 ```
 
+### 12. Add Metadata for Tools and Operations
+```bash
+kubectl apply -f annotations/SIMPLE-ANNOTATIONS.yaml
+```
+
+### 13. Run One-Time Tasks
+```bash
+kubectl apply -f jobs/SIMPLE-JOBS.yaml
+```
+
+### 14. Automate Scheduled Tasks
+```bash
+kubectl apply -f cronjobs/SIMPLE-CRONJOBS.yaml
+```
+
+### 15. Control Pod Placement
+```bash
+kubectl apply -f node-affinity/SIMPLE-NODE-AFFINITY.yaml
+```
+
 ## The Pattern: Build Up Gradually
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
 **Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling → Add Autoscaling → Add Storage → Add Resource Quotas  
-**Level 4**: Master Troubleshooting (essential for production)
+**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity (essential for production)
 
 Each level solves a specific problem. Don't skip ahead.
 
@@ -194,6 +234,8 @@ kubectl get pv,pvc -A
 kubectl get storageclass
 kubectl get resourcequota,limitrange
 kubectl get roles,rolebindings,clusterroles,clusterrolebindings
+kubectl get cronjobs,jobs
+kubectl get nodes --show-labels
 ```
 
 ### View pod distribution:
@@ -250,6 +292,20 @@ kubectl describe pod <pod-name>
 kubectl logs <pod-name> --previous
 ```
 
+### Check annotations and job status:
+```bash
+kubectl get deployment <name> -o yaml | grep -A 10 annotations
+kubectl get jobs --watch
+kubectl logs -l job-name=<job-name>
+```
+
+### View node affinity and placement:
+```bash
+kubectl get pods -o wide
+kubectl describe pod <pod-name> | grep -A 10 "Node-Selectors"
+kubectl get nodes --show-labels
+```
+
 ## Clean Up
 
 Remove all resources:
@@ -265,6 +321,10 @@ kubectl delete -f autoscaling/
 kubectl delete -f storage/
 kubectl delete -f resource-quotas/
 kubectl delete -f troubleshooting/
+kubectl delete -f annotations/
+kubectl delete -f jobs/
+kubectl delete -f cronjobs/
+kubectl delete -f node-affinity/
 ```
 
 ## Notes
