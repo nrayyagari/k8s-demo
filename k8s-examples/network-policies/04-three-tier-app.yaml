@@ -1,0 +1,386 @@
+# Three-Tier Application Network Security
+# Implement proper network segmentation for web/app/db tiers
+
+---
+# Namespace for three-tier application
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: three-tier-app
+  labels:
+    app: ecommerce
+    environment: production
+    network-policy: strict
+
+---
+# TIER 1: Web/Frontend Layer
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-tier
+  namespace: three-tier-app
+  labels:
+    tier: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+      tier: web
+  template:
+    metadata:
+      labels:
+        app: web
+        tier: web
+        version: v1
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27
+        ports:
+        - containerPort: 80
+        env:
+        - name: APP_TIER_URL
+          value: "http://app-service:8080"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  namespace: three-tier-app
+spec:
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer  # External access
+
+---
+# TIER 2: Application/API Layer  
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-tier
+  namespace: three-tier-app
+  labels:
+    tier: app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+      tier: app
+  template:
+    metadata:
+      labels:
+        app: api
+        tier: app
+        version: v1
+    spec:
+      containers:
+      - name: app
+        image: httpd:2.4
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_HOST
+          value: "db-service"
+        - name: DB_PORT
+          value: "5432"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-service
+  namespace: three-tier-app
+spec:
+  selector:
+    app: api
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+# TIER 3: Database Layer
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db-tier
+  namespace: three-tier-app
+  labels:
+    tier: database
+spec:
+  serviceName: db-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database
+      tier: database
+  template:
+    metadata:
+      labels:
+        app: database
+        tier: database
+        version: v1
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: "ecommerce"
+        - name: POSTGRES_USER
+          value: "appuser"
+        - name: POSTGRES_PASSWORD
+          value: "securepass123"
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-service
+  namespace: three-tier-app
+spec:
+  selector:
+    app: database
+  ports:
+  - port: 5432
+    targetPort: 5432
+  clusterIP: None  # Headless service for StatefulSet
+
+---
+# Test clients for each tier
+apiVersion: v1
+kind: Pod
+metadata:
+  name: external-client
+  namespace: three-tier-app
+  labels:
+    app: external-client
+    source: external
+spec:
+  containers:
+  - name: client
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+
+---
+# NETWORK POLICY: Default deny all
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: three-tier-app
+  annotations:
+    description: "Default deny all traffic - security foundation"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+# NETWORK POLICY: Allow external → web tier
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-to-web
+  namespace: three-tier-app
+  annotations:
+    description: "Allow external traffic to web tier (public facing)"
+spec:
+  podSelector:
+    matchLabels:
+      tier: web
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow from external clients
+  - from:
+    - podSelector:
+        matchLabels:
+          source: external
+    ports:
+    - protocol: TCP
+      port: 80
+  # Allow from outside cluster (LoadBalancer)
+  - from: []  # Empty 'from' allows external traffic
+    ports:
+    - protocol: TCP
+      port: 80
+
+---
+# NETWORK POLICY: Allow web → app tier only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-to-app
+  namespace: three-tier-app
+  annotations:
+    description: "Allow web tier to communicate with app tier"
+spec:
+  podSelector:
+    matchLabels:
+      tier: app
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          tier: web
+    ports:
+    - protocol: TCP
+      port: 8080
+
+---
+# NETWORK POLICY: Allow app → database tier only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-db
+  namespace: three-tier-app
+  annotations:
+    description: "Allow app tier to communicate with database tier"
+spec:
+  podSelector:
+    matchLabels:
+      tier: database
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          tier: app
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+# NETWORK POLICY: Allow DNS resolution (egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: three-tier-app
+  annotations:
+    description: "Allow DNS resolution for service discovery"
+spec:
+  podSelector: {}  # Apply to all pods
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS queries
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# NETWORK POLICY: Allow internal service communication (egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-internal-egress
+  namespace: three-tier-app
+  annotations:
+    description: "Allow pods to make internal service calls"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  # Allow egress within same namespace
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 5432
+
+# EXPLANATION:
+#
+# Three-Tier Security Model:
+# ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+# │   Web Tier  │───▶│   App Tier  │───▶│ Database    │
+# │  (Public)   │    │ (Internal)  │    │ (Private)   │
+# └─────────────┘    └─────────────┘    └─────────────┘
+#       │                   │                   │
+#    External            No direct          No external
+#    access OK           external           access at all
+#                        access
+#
+# Security Rules:
+# 1. External → Web: Allowed (public interface)
+# 2. Web → App: Allowed (business logic)
+# 3. App → DB: Allowed (data access)
+# 4. External → App: DENIED (no direct API access)
+# 5. External → DB: DENIED (no direct DB access)
+# 6. Web → DB: DENIED (no data layer bypass)
+#
+# Defense in Depth:
+# - Even if web tier is compromised, can't directly access DB
+# - App tier compromise limited to DB access only
+# - Each tier has minimum necessary permissions
+
+# TESTING COMMANDS:
+#
+# 1. Deploy the three-tier application:
+# kubectl apply -f 04-three-tier-app.yaml
+#
+# 2. Wait for pods to be ready:
+# kubectl get pods -n three-tier-app -w
+#
+# 3. Test allowed connections:
+# 
+# External → Web (should work):
+# kubectl exec -it external-client -n three-tier-app -- nc -zv web-service 80
+# kubectl exec -it external-client -n three-tier-app -- wget -qO- http://web-service --timeout=5
+#
+# Web → App (should work):
+# kubectl exec -it $(kubectl get pod -l tier=web -n three-tier-app -o jsonpath='{.items[0].metadata.name}') -n three-tier-app -- nc -zv app-service 8080
+#
+# App → DB (should work):
+# kubectl exec -it $(kubectl get pod -l tier=app -n three-tier-app -o jsonpath='{.items[0].metadata.name}') -n three-tier-app -- nc -zv db-service 5432
+#
+# 4. Test denied connections:
+#
+# External → App (should fail):
+# kubectl exec -it external-client -n three-tier-app -- nc -zv app-service 8080
+#
+# External → DB (should fail):
+# kubectl exec -it external-client -n three-tier-app -- nc -zv db-service 5432
+#
+# Web → DB (should fail - no bypass allowed):
+# kubectl exec -it $(kubectl get pod -l tier=web -n three-tier-app -o jsonpath='{.items[0].metadata.name}') -n three-tier-app -- nc -zv db-service 5432
+#
+# 5. View network policies:
+# kubectl get networkpolicy -n three-tier-app
+# kubectl describe networkpolicy allow-web-to-app -n three-tier-app
+#
+# 6. Check service endpoints:
+# kubectl get endpoints -n three-tier-app
+# kubectl get svc -n three-tier-app

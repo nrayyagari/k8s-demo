@@ -1,0 +1,712 @@
+# Multi-Environment Secrets Management
+# Different secret stores and configurations for dev/staging/production
+
+---
+# Development namespace with relaxed secret management
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secrets-dev
+  labels:
+    environment: development
+    secret-policy: relaxed
+    cost-optimization: enabled
+
+---
+# Staging namespace with moderate security
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secrets-staging
+  labels:
+    environment: staging
+    secret-policy: moderate
+    testing-environment: "true"
+
+---
+# Production namespace with strict security
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secrets-prod
+  labels:
+    environment: production
+    secret-policy: strict
+    compliance: required
+
+---
+# DEVELOPMENT: Simple ConfigMap-based secrets (for development only)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dev-secret-store
+  namespace: secrets-dev
+  labels:
+    secret-type: development-only
+data:
+  # Development database (local or shared dev instance)
+  database-host: "dev-db.company.com"
+  database-port: "5432"
+  database-name: "myapp_dev"
+  database-user: "dev_user"
+  database-password: "dev_password_123"
+  
+  # Development API keys (sandbox/test keys)
+  stripe-api-key: "sk_test_1234567890"
+  sendgrid-api-key: "SG.dev.testing.key"
+  
+  # Development JWT secret
+  jwt-secret: "dev-jwt-secret-not-secure"
+
+---
+# Development SecretStore using Kubernetes provider
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: dev-secret-store
+  namespace: secrets-dev
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: secrets-dev
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: default
+
+---
+# STAGING: AWS Secrets Manager with limited scope
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: staging-secrets-sa
+  namespace: secrets-staging
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/StagingSecretsRole
+
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: staging-aws-secrets
+  labels:
+    environment: staging
+    provider: aws-secrets-manager
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: us-west-2
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: staging-secrets-sa
+            namespace: secrets-staging
+
+---
+# PRODUCTION: Multiple secret stores with high security
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prod-secrets-sa
+  namespace: secrets-prod
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ProductionSecretsRole
+
+---
+# Production AWS Secrets Manager
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: prod-aws-secrets
+  labels:
+    environment: production
+    provider: aws-secrets-manager
+    security-level: high
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: us-west-2
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: prod-secrets-sa
+            namespace: secrets-prod
+
+---
+# Production Vault for dynamic secrets
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: prod-vault-backend
+  labels:
+    environment: production
+    provider: hashicorp-vault
+    secret-type: dynamic
+spec:
+  provider:
+    vault:
+      server: "https://vault.company.com:8200"
+      path: "secret"
+      version: "v2"
+      auth:
+        kubernetes:
+          mountPath: "kubernetes"
+          role: "production-external-secrets"
+          serviceAccountRef:
+            name: prod-secrets-sa
+            namespace: secrets-prod
+
+---
+# DEV: Basic application secrets
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: dev-app-secrets
+  namespace: secrets-dev
+  labels:
+    environment: development
+spec:
+  refreshInterval: 5m
+  secretStoreRef:
+    name: dev-secret-store
+    kind: SecretStore
+  target:
+    name: app-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        # Simple development configuration
+        DATABASE_URL: "postgresql://{{ .db_user }}:{{ .db_password }}@{{ .db_host }}:{{ .db_port }}/{{ .db_name }}"
+        config.env: |
+          ENV=development
+          DEBUG=true
+          DATABASE_URL=postgresql://{{ .db_user }}:{{ .db_password }}@{{ .db_host }}:{{ .db_port }}/{{ .db_name }}
+          STRIPE_API_KEY={{ .stripe_key }}
+          SENDGRID_API_KEY={{ .sendgrid_key }}
+          JWT_SECRET={{ .jwt_secret }}
+  data:
+  - secretKey: db_host
+    remoteRef:
+      key: dev-secret-store
+      property: database-host
+  - secretKey: db_port
+    remoteRef:
+      key: dev-secret-store
+      property: database-port
+  - secretKey: db_name
+    remoteRef:
+      key: dev-secret-store
+      property: database-name
+  - secretKey: db_user
+    remoteRef:
+      key: dev-secret-store
+      property: database-user
+  - secretKey: db_password
+    remoteRef:
+      key: dev-secret-store
+      property: database-password
+  - secretKey: stripe_key
+    remoteRef:
+      key: dev-secret-store
+      property: stripe-api-key
+  - secretKey: sendgrid_key
+    remoteRef:
+      key: dev-secret-store
+      property: sendgrid-api-key
+  - secretKey: jwt_secret
+    remoteRef:
+      key: dev-secret-store
+      property: jwt-secret
+
+---
+# STAGING: AWS Secrets Manager integration
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: staging-app-secrets
+  namespace: secrets-staging
+  labels:
+    environment: staging
+spec:
+  refreshInterval: 30m
+  secretStoreRef:
+    name: staging-aws-secrets
+    kind: ClusterSecretStore
+  target:
+    name: app-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        DATABASE_URL: "postgresql://{{ .username }}:{{ .password }}@{{ .host }}:{{ .port }}/{{ .database }}"
+        config.env: |
+          ENV=staging
+          DEBUG=false
+          DATABASE_URL=postgresql://{{ .username }}:{{ .password }}@{{ .host }}:{{ .port }}/{{ .database }}
+          STRIPE_API_KEY={{ .stripe_key }}
+          SENDGRID_API_KEY={{ .sendgrid_key }}
+          JWT_SECRET={{ .jwt_secret }}
+  data:
+  - secretKey: username
+    remoteRef:
+      key: "staging/database/myapp"
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: "staging/database/myapp"
+      property: password
+  - secretKey: host
+    remoteRef:
+      key: "staging/database/myapp"
+      property: host
+  - secretKey: port
+    remoteRef:
+      key: "staging/database/myapp"
+      property: port
+  - secretKey: database
+    remoteRef:
+      key: "staging/database/myapp"
+      property: database
+  - secretKey: stripe_key
+    remoteRef:
+      key: "staging/api-keys"
+      property: stripe_key
+  - secretKey: sendgrid_key
+    remoteRef:
+      key: "staging/api-keys"
+      property: sendgrid_key
+  - secretKey: jwt_secret
+    remoteRef:
+      key: "staging/jwt"
+      property: secret
+
+---
+# PRODUCTION: Multi-store secret aggregation
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: prod-database-secrets
+  namespace: secrets-prod
+  labels:
+    environment: production
+    secret-type: database
+    compliance: pci-dss
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: prod-aws-secrets
+    kind: ClusterSecretStore
+  target:
+    name: database-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        # Production database connection with SSL
+        DATABASE_URL: "postgresql://{{ .username }}:{{ .password }}@{{ .host }}:{{ .port }}/{{ .database }}?sslmode=require&sslcert=/etc/ssl/client.crt&sslkey=/etc/ssl/client.key"
+        PGHOST: "{{ .host }}"
+        PGPORT: "{{ .port }}"
+        PGDATABASE: "{{ .database }}"
+        PGUSER: "{{ .username }}"
+        PGPASSWORD: "{{ .password }}"
+        PGSSLMODE: "require"
+  data:
+  - secretKey: username
+    remoteRef:
+      key: "prod/database/myapp"
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: "prod/database/myapp"
+      property: password
+  - secretKey: host
+    remoteRef:
+      key: "prod/database/myapp"
+      property: host
+  - secretKey: port
+    remoteRef:
+      key: "prod/database/myapp"
+      property: port
+  - secretKey: database
+    remoteRef:
+      key: "prod/database/myapp"
+      property: database
+
+---
+# Production API secrets from Vault
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: prod-api-secrets
+  namespace: secrets-prod
+  labels:
+    environment: production
+    secret-type: api-keys
+spec:
+  refreshInterval: 2h
+  secretStoreRef:
+    name: prod-vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: api-secrets
+    creationPolicy: Owner
+  data:
+  - secretKey: stripe-live-key
+    remoteRef:
+      key: api-keys/production
+      property: stripe_live_key
+  - secretKey: sendgrid-prod-key
+    remoteRef:
+      key: api-keys/production
+      property: sendgrid_prod_key
+  - secretKey: jwt-signing-key
+    remoteRef:
+      key: security/production
+      property: jwt_signing_key
+
+---
+# Environment-specific application deployments
+# DEV Application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-dev
+  namespace: secrets-dev
+  labels:
+    app: myapp
+    environment: development
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: myapp
+      environment: development
+  template:
+    metadata:
+      labels:
+        app: myapp
+        environment: development
+    spec:
+      containers:
+      - name: app
+        image: myapp:dev
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "development"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: DATABASE_URL
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: config
+        secret:
+          secretName: app-secrets
+
+---
+# STAGING Application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-staging
+  namespace: secrets-staging
+  labels:
+    app: myapp
+    environment: staging
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+      environment: staging
+  template:
+    metadata:
+      labels:
+        app: myapp
+        environment: staging
+    spec:
+      serviceAccountName: staging-secrets-sa
+      containers:
+      - name: app
+        image: myapp:staging
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "staging"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: DATABASE_URL
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: config
+        secret:
+          secretName: app-secrets
+
+---
+# PRODUCTION Application with multiple secret sources
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-prod
+  namespace: secrets-prod
+  labels:
+    app: myapp
+    environment: production
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: myapp
+      environment: production
+  template:
+    metadata:
+      labels:
+        app: myapp
+        environment: production
+      annotations:
+        secrets.security/last-rotated: "2024-01-15"
+    spec:
+      serviceAccountName: prod-secrets-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+      - name: app
+        image: myapp:prod
+        ports:
+        - containerPort: 3000
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: NODE_ENV
+          value: "production"
+        # Database secrets from AWS
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-secrets
+              key: DATABASE_URL
+        - name: PGHOST
+          valueFrom:
+            secretKeyRef:
+              name: database-secrets
+              key: PGHOST
+        # API secrets from Vault
+        - name: STRIPE_LIVE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: stripe-live-key
+        - name: SENDGRID_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: sendgrid-prod-key
+        - name: JWT_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: jwt-signing-key
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /app/cache
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      # Production deployment strategies
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxSurge: 1
+          maxUnavailable: 0
+
+---
+# Environment-specific services
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-dev-service
+  namespace: secrets-dev
+spec:
+  selector:
+    app: myapp
+    environment: development
+  ports:
+  - port: 3000
+    targetPort: 3000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-staging-service
+  namespace: secrets-staging
+spec:
+  selector:
+    app: myapp
+    environment: staging
+  ports:
+  - port: 3000
+    targetPort: 3000
+  type: LoadBalancer
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-prod-service
+  namespace: secrets-prod
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:us-west-2:123456789012:certificate/prod-cert"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+spec:
+  selector:
+    app: myapp
+    environment: production
+  ports:
+  - port: 443
+    targetPort: 3000
+    name: https
+  - port: 80
+    targetPort: 3000
+    name: http
+  type: LoadBalancer
+
+# MULTI-ENVIRONMENT STRATEGY COMPARISON:
+#
+# DEVELOPMENT:
+# - ConfigMap-based secrets (simple, fast iteration)
+# - No encryption at rest requirements
+# - Shared development credentials
+# - Minimal resource requirements
+# - Quick refresh intervals for testing
+#
+# STAGING:
+# - AWS Secrets Manager (production-like)
+# - Moderate security requirements
+# - Environment isolation
+# - Testing rotation and refresh
+# - Performance testing with realistic secrets
+#
+# PRODUCTION:
+# - Multiple secret stores (AWS + Vault)
+# - Maximum security and compliance
+# - Encrypted secrets at rest
+# - Audit logging and monitoring
+# - Strict access controls
+# - High availability configurations
+
+# TESTING COMMANDS:
+#
+# 1. Deploy multi-environment setup:
+# kubectl apply -f 05-multi-environment.yaml
+#
+# 2. Check secrets across environments:
+# kubectl get externalsecret -n secrets-dev
+# kubectl get externalsecret -n secrets-staging
+# kubectl get externalsecret -n secrets-prod
+#
+# 3. Compare secret contents across environments:
+# kubectl get secret app-secrets -n secrets-dev -o yaml
+# kubectl get secret app-secrets -n secrets-staging -o yaml
+# kubectl get secret database-secrets -n secrets-prod -o yaml
+#
+# 4. Test environment-specific applications:
+# kubectl get pods -n secrets-dev
+# kubectl get pods -n secrets-staging
+# kubectl get pods -n secrets-prod
+#
+# 5. Verify environment-specific configurations:
+# kubectl exec -it $(kubectl get pod -l app=myapp -n secrets-dev -o jsonpath='{.items[0].metadata.name}') -n secrets-dev -- env | grep NODE_ENV
+# kubectl exec -it $(kubectl get pod -l app=myapp -n secrets-staging -o jsonpath='{.items[0].metadata.name}') -n secrets-staging -- env | grep NODE_ENV
+# kubectl exec -it $(kubectl get pod -l app=myapp -n secrets-prod -o jsonpath='{.items[0].metadata.name}') -n secrets-prod -- env | grep NODE_ENV
+#
+# 6. Compare database URLs across environments:
+# kubectl exec -it $(kubectl get pod -l app=myapp -n secrets-dev -o jsonpath='{.items[0].metadata.name}') -n secrets-dev -- env | grep DATABASE_URL
+# kubectl exec -it $(kubectl get pod -l app=myapp -n secrets-staging -o jsonpath='{.items[0].metadata.name}') -n secrets-staging -- env | grep DATABASE_URL
+# kubectl exec -it $(kubectl get pod -l app=myapp -n secrets-prod -o jsonpath='{.items[0].metadata.name}') -n secrets-prod -- env | grep DATABASE_URL
+#
+# 7. Test secret refresh in development (fast refresh):
+# kubectl patch configmap dev-secret-store -n secrets-dev -p '{"data":{"database-password":"updated-dev-password"}}'
+# # Wait 5 minutes and check:
+# kubectl get secret app-secrets -n secrets-dev -o jsonpath='{.data.DATABASE_URL}' | base64 -d
+#
+# 8. Check service endpoints:
+# kubectl get svc -n secrets-dev
+# kubectl get svc -n secrets-staging
+# kubectl get svc -n secrets-prod
+#
+# 9. Monitor External Secrets across environments:
+# kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets | grep -E "(secrets-dev|secrets-staging|secrets-prod)"
+#
+# 10. Compare resource usage across environments:
+# kubectl top pods -n secrets-dev
+# kubectl top pods -n secrets-staging
+# kubectl top pods -n secrets-prod

@@ -1,0 +1,587 @@
+# Production Multi-Tenancy with Network Isolation
+# Enterprise-grade network security for multi-tenant clusters
+
+---
+# Production namespaces with comprehensive labeling
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod-tenant-a
+  labels:
+    tenant: tenant-a
+    environment: production
+    compliance: pci-dss
+    network-policy: strict
+    team: backend-services
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod-tenant-b
+  labels:
+    tenant: tenant-b
+    environment: production
+    compliance: soc2
+    network-policy: strict
+    team: frontend-services
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod-monitoring
+  labels:
+    role: monitoring
+    environment: production
+    access-level: cluster-wide
+    team: platform
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod-shared-db
+  labels:
+    role: shared-database
+    environment: production
+    access-level: multi-tenant
+    compliance: encrypted
+    team: data
+
+---
+# Tenant A - Payment Processing Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: prod-tenant-a
+  labels:
+    app: payment-service
+    sensitivity: high
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+        tier: backend
+        sensitivity: high
+        compliance: pci-dss
+    spec:
+      containers:
+      - name: payment
+        image: nginx:1.27  # Placeholder for payment service
+        ports:
+        - containerPort: 8080
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: COMPLIANCE_MODE
+          value: "pci-dss"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: prod-tenant-a
+spec:
+  selector:
+    app: payment-service
+  ports:
+  - port: 8080
+
+---
+# Tenant B - User Interface Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui-service
+  namespace: prod-tenant-b
+  labels:
+    app: ui-service
+    sensitivity: medium
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ui-service
+  template:
+    metadata:
+      labels:
+        app: ui-service
+        tier: frontend
+        sensitivity: medium
+        compliance: soc2
+    spec:
+      containers:
+      - name: ui
+        image: httpd:2.4  # Placeholder for UI service
+        ports:
+        - containerPort: 80
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ui-service
+  namespace: prod-tenant-b
+spec:
+  selector:
+    app: ui-service
+  ports:
+  - port: 80
+  type: LoadBalancer  # External access for UI
+
+---
+# Shared Database Service
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shared-postgres
+  namespace: prod-shared-db
+  labels:
+    app: shared-postgres
+    role: database
+spec:
+  serviceName: shared-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shared-postgres
+  template:
+    metadata:
+      labels:
+        app: shared-postgres
+        role: database
+        access-level: multi-tenant
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: "shared_db"
+        - name: POSTGRES_USER
+          value: "app_user"
+        - name: POSTGRES_PASSWORD
+          value: "secure_prod_password"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shared-postgres
+  namespace: prod-shared-db
+spec:
+  selector:
+    app: shared-postgres
+  ports:
+  - port: 5432
+
+---
+# Monitoring Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: prod-monitoring
+  labels:
+    app: prometheus
+    role: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+        role: monitoring
+        access-level: cluster-wide
+    spec:
+      containers:
+      - name: prometheus
+        image: prom/prometheus:latest
+        ports:
+        - containerPort: 9090
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: prod-monitoring
+spec:
+  selector:
+    app: prometheus
+  ports:
+  - port: 9090
+
+---
+# GLOBAL POLICY: Default deny all cross-namespace traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: global-default-deny
+  namespace: prod-tenant-a
+  annotations:
+    description: "Global default deny for tenant-a"
+    compliance: "Required for PCI-DSS compliance"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: global-default-deny
+  namespace: prod-tenant-b
+  annotations:
+    description: "Global default deny for tenant-b"
+    compliance: "Required for SOC2 compliance"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+# POLICY: Allow intra-namespace communication
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: prod-tenant-a
+  annotations:
+    description: "Allow communication within tenant-a namespace"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector: {}
+  egress:
+  - to:
+    - podSelector: {}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: prod-tenant-b
+  annotations:
+    description: "Allow communication within tenant-b namespace"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector: {}
+  egress:
+  - to:
+    - podSelector: {}
+
+---
+# POLICY: Allow tenants to access shared database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-tenant-db-access
+  namespace: prod-shared-db
+  annotations:
+    description: "Allow authorized tenants to access shared database"
+    security-review: "Reviewed 2024-01-15"
+spec:
+  podSelector:
+    matchLabels:
+      role: database
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow from tenant-a (payment processing)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          tenant: tenant-a
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow from tenant-b (UI service) 
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          tenant: tenant-b
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+# POLICY: Allow tenants egress to shared database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-shared-db
+  namespace: prod-tenant-a
+  annotations:
+    description: "Allow tenant-a egress to shared database"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          role: shared-database
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-shared-db
+  namespace: prod-tenant-b
+  annotations:
+    description: "Allow tenant-b egress to shared database"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          role: shared-database
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+# POLICY: Allow monitoring to scrape all namespaces
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-ingress
+  namespace: prod-tenant-a
+  annotations:
+    description: "Allow monitoring to scrape tenant-a metrics"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          role: monitoring
+    ports:
+    - protocol: TCP
+      port: 8080  # Application metrics port
+    - protocol: TCP
+      port: 9090  # Prometheus metrics port
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-ingress
+  namespace: prod-tenant-b
+  annotations:
+    description: "Allow monitoring to scrape tenant-b metrics"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          role: monitoring
+    ports:
+    - protocol: TCP
+      port: 80   # Application port
+    - protocol: TCP
+      port: 9090 # Metrics port
+
+---
+# POLICY: Allow monitoring egress to scrape targets
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-egress
+  namespace: prod-monitoring
+  annotations:
+    description: "Allow monitoring to scrape all tenant namespaces"
+spec:
+  podSelector:
+    matchLabels:
+      role: monitoring
+  policyTypes:
+  - Egress
+  egress:
+  # Allow scraping all production namespaces
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          environment: production
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 5432
+    - protocol: TCP
+      port: 9090
+
+---
+# POLICY: Allow external access to UI service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-ui-access
+  namespace: prod-tenant-b
+  annotations:
+    description: "Allow external users to access UI service"
+spec:
+  podSelector:
+    matchLabels:
+      tier: frontend
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow external traffic (LoadBalancer)
+  - from: []  # Empty from allows external
+    ports:
+    - protocol: TCP
+      port: 80
+
+---
+# POLICY: Essential DNS and internal services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-essential-egress
+  namespace: prod-tenant-a
+  annotations:
+    description: "Allow essential services (DNS, etc.)"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  # DNS resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-essential-egress
+  namespace: prod-tenant-b
+  annotations:
+    description: "Allow essential services (DNS, etc.)"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  # DNS resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+# EXPLANATION:
+#
+# Production Multi-Tenancy Security Model:
+# 
+# ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+# │   Tenant A      │  │   Tenant B      │  │   Monitoring    │
+# │ (Payment/PCI)   │  │   (UI/SOC2)     │  │ (Cluster-wide)  │
+# └─────────────────┘  └─────────────────┘  └─────────────────┘
+#          │                     │                     │
+#          └─────────────────────┼─────────────────────┘
+#                                │
+#                    ┌─────────────────┐
+#                    │  Shared Database │
+#                    │ (Multi-tenant)   │
+#                    └─────────────────┘
+#
+# Security Architecture:
+# 1. Complete tenant isolation (no cross-tenant communication)
+# 2. Shared services with controlled access
+# 3. Monitoring has read-only access to all tenants
+# 4. External access only where needed (UI tier)
+# 5. Compliance-aware labeling and policies
+#
+# Enterprise Features:
+# - Compliance annotations on policies
+# - Comprehensive labeling strategy
+# - Role-based access patterns
+# - Monitoring integration
+# - Audit-friendly configuration
+
+# TESTING COMMANDS:
+#
+# 1. Deploy production isolation demo:
+# kubectl apply -f 06-production-isolation.yaml
+#
+# 2. Wait for all pods to be ready:
+# kubectl get pods -A | grep prod-
+#
+# 3. Test tenant isolation (should fail):
+# kubectl exec -it $(kubectl get pod -l app=payment-service -n prod-tenant-a -o jsonpath='{.items[0].metadata.name}') -n prod-tenant-a -- nc -zv ui-service.prod-tenant-b.svc.cluster.local 80
+#
+# 4. Test shared database access (should work):
+# kubectl exec -it $(kubectl get pod -l app=payment-service -n prod-tenant-a -o jsonpath='{.items[0].metadata.name}') -n prod-tenant-a -- nc -zv shared-postgres.prod-shared-db.svc.cluster.local 5432
+# kubectl exec -it $(kubectl get pod -l app=ui-service -n prod-tenant-b -o jsonpath='{.items[0].metadata.name}') -n prod-tenant-b -- nc -zv shared-postgres.prod-shared-db.svc.cluster.local 5432
+#
+# 5. Test monitoring access (should work):
+# kubectl exec -it $(kubectl get pod -l app=prometheus -n prod-monitoring -o jsonpath='{.items[0].metadata.name}') -n prod-monitoring -- nc -zv payment-service.prod-tenant-a.svc.cluster.local 8080
+# kubectl exec -it $(kubectl get pod -l app=prometheus -n prod-monitoring -o jsonpath='{.items[0].metadata.name}') -n prod-monitoring -- nc -zv ui-service.prod-tenant-b.svc.cluster.local 80
+#
+# 6. Test external UI access (if LoadBalancer available):
+# kubectl get svc ui-service -n prod-tenant-b
+# # Access external IP from browser or curl
+#
+# 7. Verify DNS still works:
+# kubectl exec -it $(kubectl get pod -l app=payment-service -n prod-tenant-a -o jsonpath='{.items[0].metadata.name}') -n prod-tenant-a -- nslookup shared-postgres.prod-shared-db.svc.cluster.local
+#
+# 8. View all network policies:
+# kubectl get networkpolicy -A | grep prod-
+# kubectl describe networkpolicy allow-tenant-db-access -n prod-shared-db
+#
+# 9. Check compliance annotations:
+# kubectl get networkpolicy -n prod-tenant-a -o yaml | grep -A5 annotations

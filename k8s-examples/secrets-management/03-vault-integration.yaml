@@ -1,0 +1,542 @@
+# HashiCorp Vault Integration
+# Production-ready integration with HashiCorp Vault
+
+---
+# Namespace for Vault integration demo
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vault-secrets-demo
+  labels:
+    secret-backend: hashicorp-vault
+    environment: production
+    vault-enabled: "true"
+
+---
+# ServiceAccount for Vault authentication
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-secrets-sa
+  namespace: vault-secrets-demo
+  labels:
+    vault-auth: kubernetes
+    component: external-secrets
+
+---
+# ClusterRole for Vault service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vault-secrets-role
+rules:
+- apiGroups: [""]
+  resources: ["serviceaccounts/token"]
+  verbs: ["create"]
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+
+---
+# ClusterRoleBinding for Vault service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-secrets-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vault-secrets-role
+subjects:
+- kind: ServiceAccount
+  name: vault-secrets-sa
+  namespace: vault-secrets-demo
+
+---
+# ClusterSecretStore for HashiCorp Vault
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: vault-backend
+  labels:
+    provider: hashicorp-vault
+    auth-method: kubernetes
+spec:
+  provider:
+    vault:
+      server: "https://vault.company.com:8200"
+      path: "secret"              # KV v2 secret engine mount
+      version: "v2"               # KV version 2
+      auth:
+        # Kubernetes auth method
+        kubernetes:
+          mountPath: "kubernetes"
+          role: "external-secrets"
+          serviceAccountRef:
+            name: vault-secrets-sa
+            namespace: vault-secrets-demo
+
+---
+# Alternative SecretStore with AppRole authentication
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: vault-approle
+  namespace: vault-secrets-demo
+  annotations:
+    description: "Vault access using AppRole authentication"
+spec:
+  provider:
+    vault:
+      server: "https://vault.company.com:8200"
+      path: "secret"
+      version: "v2"
+      auth:
+        # AppRole authentication
+        appRole:
+          path: "approle"
+          roleId: "external-secrets-role"
+          secretRef:
+            secretId:
+              name: vault-approle-secret
+              key: secret-id
+
+---
+# Vault AppRole secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-approle-secret
+  namespace: vault-secrets-demo
+type: Opaque
+stringData:
+  secret-id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+---
+# Alternative SecretStore with Token authentication (for dev/testing)
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: vault-token
+  namespace: vault-secrets-demo
+  annotations:
+    description: "Vault access using static token (dev only)"
+spec:
+  provider:
+    vault:
+      server: "https://vault.company.com:8200"
+      path: "secret"
+      version: "v2"
+      auth:
+        # Token authentication (not recommended for production)
+        tokenSecretRef:
+          name: vault-token-secret
+          key: token
+
+---
+# Vault token secret (for dev/testing only)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-token-secret
+  namespace: vault-secrets-demo
+type: Opaque
+stringData:
+  token: "hvs.CAESIG1234567890abcdefghijklmnop"
+
+---
+# ExternalSecret 1: Database credentials from Vault KV
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: vault-database-secret
+  namespace: vault-secrets-demo
+  labels:
+    vault-path: database/production
+    component: database
+spec:
+  refreshInterval: 30m
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: database-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        # Create composite database URL
+        DATABASE_URL: "postgresql://{{ .username }}:{{ .password }}@{{ .host }}:{{ .port }}/{{ .database }}?sslmode=require"
+        # Separate connection parameters
+        PGHOST: "{{ .host }}"
+        PGPORT: "{{ .port }}"
+        PGDATABASE: "{{ .database }}"
+        PGUSER: "{{ .username }}"
+        PGPASSWORD: "{{ .password }}"
+        PGSSLMODE: "require"
+  data:
+  - secretKey: username
+    remoteRef:
+      key: database/production    # Path in Vault: secret/database/production
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: database/production
+      property: password
+  - secretKey: host
+    remoteRef:
+      key: database/production
+      property: host
+  - secretKey: port
+    remoteRef:
+      key: database/production
+      property: port
+  - secretKey: database
+    remoteRef:
+      key: database/production
+      property: database
+
+---
+# ExternalSecret 2: Dynamic database credentials from Vault
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: vault-dynamic-db-secret
+  namespace: vault-secrets-demo
+  labels:
+    vault-path: database/creds/app-role
+    component: database
+    secret-type: dynamic
+spec:
+  refreshInterval: 5m  # Short refresh for dynamic secrets
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: dynamic-db-credentials
+    creationPolicy: Owner
+  data:
+  - secretKey: username
+    remoteRef:
+      key: database/creds/app-role  # Dynamic secret path
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: database/creds/app-role
+      property: password
+
+---
+# ExternalSecret 3: PKI certificates from Vault
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: vault-pki-certificate
+  namespace: vault-secrets-demo
+  labels:
+    vault-path: pki/issue/app-role
+    component: tls
+    secret-type: certificate
+spec:
+  refreshInterval: 12h  # Refresh certificates twice daily
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: app-tls-certificate
+    creationPolicy: Owner
+    type: kubernetes.io/tls
+  data:
+  - secretKey: tls.crt
+    remoteRef:
+      key: pki/issue/app-role
+      property: certificate
+  - secretKey: tls.key
+    remoteRef:
+      key: pki/issue/app-role
+      property: private_key
+  - secretKey: ca.crt
+    remoteRef:
+      key: pki/issue/app-role
+      property: issuing_ca
+
+---
+# ExternalSecret 4: Transit encryption key
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: vault-transit-config
+  namespace: vault-secrets-demo
+  labels:
+    vault-path: transit/datakey/plaintext/app-encryption
+    component: encryption
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: encryption-keys
+    creationPolicy: Owner
+  data:
+  - secretKey: encryption-key
+    remoteRef:
+      key: transit/datakey/plaintext/app-encryption
+      property: plaintext
+
+---
+# ExternalSecret 5: Complete secret import
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: vault-app-config
+  namespace: vault-secrets-demo
+  labels:
+    vault-path: application/config/production
+    component: application
+spec:
+  refreshInterval: 15m
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: app-configuration
+    creationPolicy: Owner
+  dataFrom:
+  # Import entire secret path
+  - extract:
+      key: application/config/production
+
+---
+# Application deployment using Vault secrets
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-app
+  namespace: vault-secrets-demo
+  labels:
+    app: vault-app
+    secrets-backend: vault
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vault-app
+  template:
+    metadata:
+      labels:
+        app: vault-app
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"  # Using External Secrets instead
+    spec:
+      serviceAccountName: vault-secrets-sa
+      containers:
+      - name: app
+        image: nginx:1.27
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        env:
+        # Static database credentials
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: DATABASE_URL
+        # Dynamic database credentials
+        - name: DYNAMIC_DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: dynamic-db-credentials
+              key: username
+        - name: DYNAMIC_DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: dynamic-db-credentials
+              key: password
+        # Encryption key
+        - name: ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: encryption-keys
+              key: encryption-key
+        volumeMounts:
+        # TLS certificates
+        - name: tls-certs
+          mountPath: /etc/ssl/certs
+          readOnly: true
+        # Application configuration
+        - name: app-config
+          mountPath: /etc/app-config
+          readOnly: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: app-tls-certificate
+      - name: app-config
+        secret:
+          secretName: app-configuration
+
+---
+# Service for the Vault-integrated application
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-app-service
+  namespace: vault-secrets-demo
+spec:
+  selector:
+    app: vault-app
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  - port: 443
+    targetPort: 443
+    name: https
+
+---
+# Vault debug pod for testing
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vault-debug
+  namespace: vault-secrets-demo
+  labels:
+    role: debugging
+spec:
+  serviceAccountName: vault-secrets-sa
+  containers:
+  - name: vault-cli
+    image: vault:1.15.2
+    command: ["sleep", "3600"]
+    env:
+    - name: VAULT_ADDR
+      value: "https://vault.company.com:8200"
+    - name: VAULT_SKIP_VERIFY
+      value: "true"
+    volumeMounts:
+    - name: db-creds
+      mountPath: /secrets/database
+      readOnly: true
+    - name: dynamic-creds
+      mountPath: /secrets/dynamic
+      readOnly: true
+    - name: tls-certs
+      mountPath: /secrets/tls
+      readOnly: true
+    - name: app-config
+      mountPath: /secrets/config
+      readOnly: true
+  volumes:
+  - name: db-creds
+    secret:
+      secretName: database-credentials
+  - name: dynamic-creds
+    secret:
+      secretName: dynamic-db-credentials
+  - name: tls-certs
+    secret:
+      secretName: app-tls-certificate
+  - name: app-config
+    secret:
+      secretName: app-configuration
+
+# VAULT SERVER CONFIGURATION REQUIREMENTS:
+#
+# 1. Enable KV v2 secret engine:
+# vault secrets enable -path=secret kv-v2
+#
+# 2. Enable Kubernetes auth method:
+# vault auth enable kubernetes
+#
+# 3. Configure Kubernetes auth:
+# vault write auth/kubernetes/config \
+#     token_reviewer_jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+#     kubernetes_host="https://kubernetes.default.svc:443" \
+#     kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+#
+# 4. Create policy for external secrets:
+# vault policy write external-secrets - <<EOF
+# path "secret/data/*" {
+#   capabilities = ["read"]
+# }
+# path "database/creds/app-role" {
+#   capabilities = ["read"]
+# }
+# path "pki/issue/app-role" {
+#   capabilities = ["create", "update"]
+# }
+# path "transit/datakey/plaintext/app-encryption" {
+#   capabilities = ["create", "update"]
+# }
+# EOF
+#
+# 5. Create Kubernetes role:
+# vault write auth/kubernetes/role/external-secrets \
+#     bound_service_account_names=vault-secrets-sa \
+#     bound_service_account_namespaces=vault-secrets-demo \
+#     policies=external-secrets \
+#     ttl=24h
+#
+# 6. Example secrets to create in Vault:
+# vault kv put secret/database/production \
+#     username=app_user \
+#     password=secure_vault_password \
+#     host=vault-db.company.com \
+#     port=5432 \
+#     database=production_app
+#
+# vault kv put secret/application/config/production \
+#     stripe_key=sk_live_vault_123 \
+#     sendgrid_key=SG.vault.456 \
+#     jwt_secret=vault_jwt_secret_789
+
+# TESTING COMMANDS:
+#
+# 1. Set up Vault secrets (using Vault CLI):
+# export VAULT_ADDR="https://vault.company.com:8200"
+# export VAULT_TOKEN="your-vault-token"
+# vault kv put secret/database/production username=app_user password=secure_vault_password host=vault-db.company.com port=5432 database=production_app
+# vault kv put secret/application/config/production stripe_key=sk_live_vault_123 sendgrid_key=SG.vault.456 jwt_secret=vault_jwt_secret_789
+#
+# 2. Deploy Vault integration:
+# kubectl apply -f 03-vault-integration.yaml
+#
+# 3. Check ExternalSecret status:
+# kubectl get externalsecret -n vault-secrets-demo
+# kubectl describe externalsecret vault-database-secret -n vault-secrets-demo
+#
+# 4. Verify secrets were created from Vault:
+# kubectl get secrets -n vault-secrets-demo
+# kubectl get secret database-credentials -n vault-secrets-demo -o yaml
+#
+# 5. Test Vault connectivity and authentication:
+# kubectl exec -it vault-debug -n vault-secrets-demo -- vault auth -method=kubernetes role=external-secrets jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+# kubectl exec -it vault-debug -n vault-secrets-demo -- vault kv get secret/database/production
+#
+# 6. Examine synced secrets:
+# kubectl exec -it vault-debug -n vault-secrets-demo -- cat /secrets/database/DATABASE_URL
+# kubectl exec -it vault-debug -n vault-secrets-demo -- cat /secrets/database/PGUSER
+# kubectl exec -it vault-debug -n vault-secrets-demo -- ls -la /secrets/tls/
+#
+# 7. Test dynamic secrets (if configured):
+# kubectl exec -it vault-debug -n vault-secrets-demo -- cat /secrets/dynamic/username
+# kubectl exec -it vault-debug -n vault-secrets-demo -- cat /secrets/dynamic/password
+#
+# 8. Test secret refresh from Vault:
+# vault kv put secret/database/production username=app_user password=updated_vault_password host=vault-db.company.com port=5432 database=production_app
+# # Wait for refresh interval (30m) or force refresh and check:
+# kubectl annotate externalsecret vault-database-secret -n vault-secrets-demo force-sync=$(date +%s) --overwrite
+#
+# 9. Check application environment variables:
+# kubectl exec -it $(kubectl get pod -l app=vault-app -n vault-secrets-demo -o jsonpath='{.items[0].metadata.name}') -n vault-secrets-demo -- env | grep -E "(DATABASE_URL|DYNAMIC_DB|ENCRYPTION)"
+#
+# 10. Monitor External Secrets Operator logs for Vault operations:
+# kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets | grep vault-secrets-demo

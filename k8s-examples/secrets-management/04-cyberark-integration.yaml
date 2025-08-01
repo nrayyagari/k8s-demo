@@ -1,0 +1,588 @@
+# CyberArk Integration
+# Enterprise privileged access management integration
+
+---
+# Namespace for CyberArk integration demo
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cyberark-secrets-demo
+  labels:
+    secret-backend: cyberark
+    environment: production
+    compliance: pci-dss-soc2
+
+---
+# ServiceAccount for CyberArk integration
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cyberark-secrets-sa
+  namespace: cyberark-secrets-demo
+  labels:
+    cyberark-auth: credential-based
+    component: external-secrets
+
+---
+# CyberArk authentication credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cyberark-credentials
+  namespace: cyberark-secrets-demo
+  labels:
+    cyberark-component: authentication
+type: Opaque
+stringData:
+  username: "k8s-external-secrets"
+  password: "cyberark-service-password-123"
+  # Optional: Certificate-based authentication
+  client-cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDXTCCAkWgAwIBAgIJAK7w8...
+    -----END CERTIFICATE-----
+  client-key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0...
+    -----END PRIVATE KEY-----
+
+---
+# ClusterSecretStore for CyberArk
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: cyberark-backend
+  labels:
+    provider: cyberark
+    auth-method: credential
+spec:
+  provider:
+    cyberark:
+      # CyberArk PVWA (Password Vault Web Access) URL
+      url: "https://cyberark.company.com"
+      # Authentication method
+      auth:
+        credential:
+          secretRef:
+            username:
+              name: cyberark-credentials
+              key: username
+            password:
+              name: cyberark-credentials
+              key: password
+
+---
+# Alternative SecretStore with certificate authentication
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: cyberark-cert-auth
+  namespace: cyberark-secrets-demo
+  annotations:
+    description: "CyberArk access using certificate authentication"
+spec:
+  provider:
+    cyberark:
+      url: "https://cyberark.company.com"
+      auth:
+        certificateAuth:
+          secretRef:
+            certificate:
+              name: cyberark-credentials
+              key: client-cert
+            privateKey:
+              name: cyberark-credentials
+              key: client-key
+
+---
+# ExternalSecret 1: Database privileged account from CyberArk
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: cyberark-database-account
+  namespace: cyberark-secrets-demo
+  labels:
+    cyberark-safe: Database-Production
+    account-type: database-admin
+    compliance: pci-dss
+spec:
+  refreshInterval: 1h  # Frequent refresh for privileged accounts
+  secretStoreRef:
+    name: cyberark-backend
+    kind: ClusterSecretStore
+  target:
+    name: db-admin-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        # Create database connection string for admin tasks
+        ADMIN_DATABASE_URL: "postgresql://{{ .username }}:{{ .password }}@{{ .address }}:5432/postgres"
+        DB_ADMIN_USER: "{{ .username }}"
+        DB_ADMIN_PASSWORD: "{{ .password }}"
+        DB_HOST: "{{ .address }}"
+  data:
+  - secretKey: username
+    remoteRef:
+      key: "Database-Production"    # CyberArk Safe name
+      property: "Username"
+  - secretKey: password
+    remoteRef:
+      key: "Database-Production"
+      property: "Password"
+  - secretKey: address
+    remoteRef:
+      key: "Database-Production"
+      property: "Address"
+
+---
+# ExternalSecret 2: Service account credentials
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: cyberark-service-account
+  namespace: cyberark-secrets-demo
+  labels:
+    cyberark-safe: ServiceAccounts-Production
+    account-type: application-service
+spec:
+  refreshInterval: 30m
+  secretStoreRef:
+    name: cyberark-backend
+    kind: ClusterSecretStore
+  target:
+    name: app-service-credentials
+    creationPolicy: Owner
+  data:
+  - secretKey: username
+    remoteRef:
+      key: "ServiceAccounts-Production"
+      property: "Username"
+  - secretKey: password
+    remoteRef:
+      key: "ServiceAccounts-Production"
+      property: "Password"
+  - secretKey: domain
+    remoteRef:
+      key: "ServiceAccounts-Production"
+      property: "Domain"
+
+---
+# ExternalSecret 3: API keys and integration credentials
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: cyberark-api-credentials
+  namespace: cyberark-secrets-demo
+  labels:
+    cyberark-safe: API-Keys-Production
+    account-type: external-integration
+spec:
+  refreshInterval: 4h
+  secretStoreRef:
+    name: cyberark-backend
+    kind: ClusterSecretStore
+  target:
+    name: external-api-keys
+    creationPolicy: Owner
+  data:
+  # Payment processing credentials
+  - secretKey: stripe-secret-key
+    remoteRef:
+      key: "API-Keys-Production"
+      property: "Stripe-Secret-Key"
+  - secretKey: stripe-publishable-key
+    remoteRef:
+      key: "API-Keys-Production"
+      property: "Stripe-Publishable-Key"
+  # Email service credentials
+  - secretKey: sendgrid-api-key
+    remoteRef:
+      key: "API-Keys-Production"
+      property: "SendGrid-API-Key"
+  # External service authentication
+  - secretKey: oauth-client-secret
+    remoteRef:
+      key: "API-Keys-Production"
+      property: "OAuth-Client-Secret"
+
+---
+# ExternalSecret 4: SSH keys for server access
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: cyberark-ssh-keys
+  namespace: cyberark-secrets-demo
+  labels:
+    cyberark-safe: SSH-Keys-Production
+    account-type: ssh-access
+spec:
+  refreshInterval: 6h
+  secretStoreRef:
+    name: cyberark-backend
+    kind: ClusterSecretStore
+  target:
+    name: ssh-access-keys
+    creationPolicy: Owner
+    type: Opaque
+  data:
+  - secretKey: private-key
+    remoteRef:
+      key: "SSH-Keys-Production"
+      property: "PrivateKey"
+  - secretKey: public-key
+    remoteRef:
+      key: "SSH-Keys-Production"
+      property: "PublicKey"
+  - secretKey: passphrase
+    remoteRef:
+      key: "SSH-Keys-Production"
+      property: "Passphrase"
+
+---
+# ExternalSecret 5: Certificate and PKI credentials
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: cyberark-certificates
+  namespace: cyberark-secrets-demo
+  labels:
+    cyberark-safe: Certificates-Production
+    account-type: ssl-certificate
+spec:
+  refreshInterval: 24h  # Certificates change less frequently
+  secretStoreRef:
+    name: cyberark-backend
+    kind: ClusterSecretStore
+  target:
+    name: ssl-certificates
+    creationPolicy: Owner
+    type: kubernetes.io/tls
+  data:
+  - secretKey: tls.crt
+    remoteRef:
+      key: "Certificates-Production"
+      property: "Certificate"
+  - secretKey: tls.key
+    remoteRef:
+      key: "Certificates-Production"
+      property: "PrivateKey"
+
+---
+# Production application using CyberArk secrets
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cyberark-secured-app
+  namespace: cyberark-secrets-demo
+  labels:
+    app: cyberark-secured-app
+    security-level: high
+    compliance: pci-dss
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cyberark-secured-app
+  template:
+    metadata:
+      labels:
+        app: cyberark-secured-app
+      annotations:
+        cyberark.security/privileged-access: "true"
+        compliance.audit/level: "high"
+    spec:
+      serviceAccountName: cyberark-secrets-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+      - name: app
+        image: nginx:1.27
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        env:
+        # Database admin credentials (for migrations/maintenance)
+        - name: DB_ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-admin-credentials
+              key: DB_ADMIN_USER
+        - name: DB_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-admin-credentials
+              key: DB_ADMIN_PASSWORD
+        # Service account credentials
+        - name: SERVICE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: app-service-credentials
+              key: username
+        - name: SERVICE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-service-credentials
+              key: password
+        # API integration keys
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: external-api-keys
+              key: stripe-secret-key
+        - name: SENDGRID_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: external-api-keys
+              key: sendgrid-api-key
+        volumeMounts:
+        # SSL certificates
+        - name: ssl-certs
+          mountPath: /etc/ssl/certs
+          readOnly: true
+        # SSH keys for external access
+        - name: ssh-keys
+          mountPath: /etc/ssh-keys
+          readOnly: true
+          defaultMode: 0600
+        # Temporary and cache directories
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: ssl-certs
+        secret:
+          secretName: ssl-certificates
+      - name: ssh-keys
+        secret:
+          secretName: ssh-access-keys
+          defaultMode: 0600
+      - name: tmp
+        emptyDir: {}
+      - name: var-cache
+        emptyDir: {}
+
+---
+# Service for the CyberArk-secured application
+apiVersion: v1
+kind: Service
+metadata:
+  name: cyberark-app-service
+  namespace: cyberark-secrets-demo
+  annotations:
+    cyberark.security/monitored: "true"
+spec:
+  selector:
+    app: cyberark-secured-app
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  - port: 443
+    targetPort: 443
+    name: https
+
+---
+# CronJob for privileged maintenance tasks
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-maintenance
+  namespace: cyberark-secrets-demo
+  labels:
+    job-type: maintenance
+    security-level: privileged
+spec:
+  schedule: "0 2 * * 0"  # Weekly on Sunday at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            job-type: maintenance
+          annotations:
+            cyberark.security/privileged-task: "true"
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: cyberark-secrets-sa
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10002
+            fsGroup: 10002
+          containers:
+          - name: maintenance
+            image: postgres:16
+            command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Starting database maintenance with CyberArk privileged account..."
+              echo "Connection: $ADMIN_DATABASE_URL"
+              echo "User: $DB_ADMIN_USER"
+              # Actual maintenance commands would go here
+              echo "Maintenance completed successfully"
+            env:
+            - name: ADMIN_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-admin-credentials
+                  key: ADMIN_DATABASE_URL
+            - name: DB_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-admin-credentials
+                  key: DB_ADMIN_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-admin-credentials
+                  key: DB_ADMIN_PASSWORD
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                - ALL
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir: {}
+
+---
+# Debug pod for CyberArk testing
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cyberark-debug
+  namespace: cyberark-secrets-demo
+  labels:
+    role: debugging
+spec:
+  serviceAccountName: cyberark-secrets-sa
+  containers:
+  - name: debug
+    image: curlimages/curl:latest
+    command: ["sleep", "3600"]
+    env:
+    - name: CYBERARK_URL
+      value: "https://cyberark.company.com"
+    volumeMounts:
+    - name: db-creds
+      mountPath: /secrets/database
+      readOnly: true
+    - name: service-creds
+      mountPath: /secrets/service
+      readOnly: true
+    - name: api-keys
+      mountPath: /secrets/api
+      readOnly: true
+    - name: ssh-keys
+      mountPath: /secrets/ssh
+      readOnly: true
+      defaultMode: 0600
+    - name: ssl-certs
+      mountPath: /secrets/ssl
+      readOnly: true
+  volumes:
+  - name: db-creds
+    secret:
+      secretName: db-admin-credentials
+  - name: service-creds
+    secret:
+      secretName: app-service-credentials
+  - name: api-keys
+    secret:
+      secretName: external-api-keys
+  - name: ssh-keys
+    secret:
+      secretName: ssh-access-keys
+      defaultMode: 0600
+  - name: ssl-certs
+    secret:
+      secretName: ssl-certificates
+
+# CYBERARK CONFIGURATION REQUIREMENTS:
+#
+# 1. CyberArk Safe Setup:
+# - Create Safes: Database-Production, ServiceAccounts-Production, API-Keys-Production
+# - Set appropriate permissions for external secrets service account
+# - Configure password policies and rotation schedules
+#
+# 2. Account Management:
+# - Store privileged database accounts in Database-Production safe
+# - Store service accounts in ServiceAccounts-Production safe
+# - Store API keys and tokens in API-Keys-Production safe
+# - Store SSH keys in SSH-Keys-Production safe
+# - Store certificates in Certificates-Production safe
+#
+# 3. CyberArk PVWA Configuration:
+# - Enable REST API access
+# - Configure authentication methods (credential, certificate)
+# - Set up audit logging and monitoring
+# - Configure network access from Kubernetes cluster
+#
+# 4. Security Policies:
+# - Implement dual control for sensitive accounts
+# - Configure automatic password rotation
+# - Set up session monitoring and recording
+# - Implement emergency access procedures
+
+# TESTING COMMANDS:
+#
+# 1. Deploy CyberArk integration:
+# kubectl apply -f 04-cyberark-integration.yaml
+#
+# 2. Check ExternalSecret status:
+# kubectl get externalsecret -n cyberark-secrets-demo
+# kubectl describe externalsecret cyberark-database-account -n cyberark-secrets-demo
+#
+# 3. Verify secrets were created from CyberArk:
+# kubectl get secrets -n cyberark-secrets-demo
+# kubectl get secret db-admin-credentials -n cyberark-secrets-demo -o yaml
+#
+# 4. Test CyberArk connectivity:
+# kubectl exec -it cyberark-debug -n cyberark-secrets-demo -- curl -k "https://cyberark.company.com/PasswordVault/API/Accounts" -H "Authorization: Basic $(echo -n 'username:password' | base64)"
+#
+# 5. Examine privileged account credentials:
+# kubectl exec -it cyberark-debug -n cyberark-secrets-demo -- cat /secrets/database/DB_ADMIN_USER
+# kubectl exec -it cyberark-debug -n cyberark-secrets-demo -- echo "Password: $(cat /secrets/database/DB_ADMIN_PASSWORD)"
+#
+# 6. Check service account credentials:
+# kubectl exec -it cyberark-debug -n cyberark-secrets-demo -- cat /secrets/service/username
+# kubectl exec -it cyberark-debug -n cyberark-secrets-demo -- cat /secrets/service/domain
+#
+# 7. Verify SSH key permissions:
+# kubectl exec -it cyberark-debug -n cyberark-secrets-demo -- ls -la /secrets/ssh/
+# kubectl exec -it cyberark-debug -n cyberark-secrets-demo -- head -1 /secrets/ssh/private-key
+#
+# 8. Check SSL certificates:
+# kubectl exec -it cyberark-debug -n cyberark-secrets-demo -- openssl x509 -in /secrets/ssl/tls.crt -text -noout | grep Subject
+#
+# 9. Test application access to secrets:
+# kubectl exec -it $(kubectl get pod -l app=cyberark-secured-app -n cyberark-secrets-demo -o jsonpath='{.items[0].metadata.name}') -n cyberark-secrets-demo -- env | grep -E "(DB_ADMIN|SERVICE|STRIPE)"
+#
+# 10. Monitor CronJob execution:
+# kubectl get cronjob database-maintenance -n cyberark-secrets-demo
+# kubectl get jobs -n cyberark-secrets-demo
+# kubectl logs job/database-maintenance-<timestamp> -n cyberark-secrets-demo
+#
+# 11. Check External Secrets Operator logs for CyberArk operations:
+# kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets | grep cyberark-secrets-demo

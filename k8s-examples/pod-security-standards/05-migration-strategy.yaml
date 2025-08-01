@@ -1,0 +1,463 @@
+# Pod Security Standards Migration Strategy
+# Step-by-step approach to implement security standards in existing clusters
+
+---
+# PHASE 1: Assessment Namespace - Understand current state
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: migration-assessment
+  labels:
+    # Start with audit-only to understand violations
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    migration-phase: assessment
+    assessment-date: "2024-01-15"
+
+---
+# PHASE 2: Warning Namespace - Show impact without blocking
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: migration-warning
+  labels:
+    # Add warnings for baseline violations
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline
+    migration-phase: warning
+    target-date: "2024-02-01"
+
+---
+# PHASE 3: Baseline Enforcement - First security gate
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: migration-baseline
+  labels:
+    # Enforce baseline, warn about restricted
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+    migration-phase: baseline-enforcement
+    completion-date: "2024-02-15"
+
+---
+# PHASE 4: Restricted Target - Final security posture
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: migration-restricted
+  labels:
+    # Full restricted enforcement
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    migration-phase: restricted-enforcement
+    completion-date: "2024-03-01"
+
+---
+# Legacy Application - Needs gradual migration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-app
+  namespace: migration-assessment
+  labels:
+    app: legacy-app
+    security-status: needs-migration
+    priority: high
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: legacy-app
+  template:
+    metadata:
+      labels:
+        app: legacy-app
+        migration-status: legacy
+    spec:
+      # Current state: No security context (problematic)
+      containers:
+      - name: app
+        image: nginx:1.27
+        ports:
+        - containerPort: 80  # Privileged port
+        # Missing all security contexts - will generate many violations
+
+---
+# Step 1 Migration - Basic security improvements
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-app-step1
+  namespace: migration-warning
+  labels:
+    app: legacy-app
+    security-status: basic-improvements
+    migration-step: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: legacy-app-step1
+  template:
+    metadata:
+      labels:
+        app: legacy-app-step1
+        migration-status: step1
+    spec:
+      # Step 1: Add basic pod-level security
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 2000
+      containers:
+      - name: app
+        image: nginx:1.27
+        ports:
+        - containerPort: 8080  # Changed to non-privileged port
+        # Step 1: Add basic container security
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+
+---
+# Step 2 Migration - Baseline compliance
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-app-step2
+  namespace: migration-baseline
+  labels:
+    app: legacy-app
+    security-status: baseline-compliant
+    migration-step: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: legacy-app-step2
+  template:
+    metadata:
+      labels:
+        app: legacy-app-step2
+        migration-status: step2
+    spec:
+      # Step 2: Full baseline compliance
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault  # Added seccomp
+      containers:
+      - name: app
+        image: nginx:1.27
+        ports:
+        - containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+          seccompProfile:
+            type: RuntimeDefault
+        # Added some writable volumes
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-run
+          mountPath: /var/run
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: var-run
+        emptyDir: {}
+
+---
+# Step 3 Migration - Restricted compliance (final state)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-app-final
+  namespace: migration-restricted
+  labels:
+    app: legacy-app
+    security-status: restricted-compliant
+    migration-step: "final"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: legacy-app-final
+  template:
+    metadata:
+      labels:
+        app: legacy-app-final
+        migration-status: complete
+    spec:
+      # Final: Full restricted compliance
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534        # Changed to nobody user
+        runAsGroup: 65534       # Changed to nobody group
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: app
+        image: nginx:1.27
+        ports:
+        - containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true  # Added read-only root
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          capabilities:
+            drop:
+            - ALL  # No added capabilities
+          seccompProfile:
+            type: RuntimeDefault
+        # Full volume mounts for read-only root
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: var-cache
+        emptyDir: {}
+      - name: var-run
+        emptyDir: {}
+      - name: nginx-config
+        configMap:
+          name: secure-nginx-config
+
+---
+# ConfigMap for final secure configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secure-nginx-config
+  namespace: migration-restricted
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name localhost;
+        location / {
+            root /usr/share/nginx/html;
+            index index.html index.htm;
+        }
+        # Security headers for production
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";
+        add_header Content-Security-Policy "default-src 'self'";
+    }
+
+---
+# Migration Helper Job - Analyze existing workloads
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: security-analysis-job
+  namespace: migration-assessment
+  labels:
+    job-type: security-analysis
+spec:
+  template:
+    metadata:
+      labels:
+        job-type: security-analysis
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: analyzer
+        image: busybox:1.36
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== Pod Security Standards Analysis Report ==="
+          echo "Timestamp: $(date)"
+          echo ""
+          echo "This job would typically:"
+          echo "1. Query Kubernetes API for all pods"
+          echo "2. Analyze security contexts"
+          echo "3. Identify violations for each security profile"
+          echo "4. Generate migration recommendations"
+          echo ""
+          echo "Common violations found:"
+          echo "- Pods running as root (UID 0)"
+          echo "- Missing seccomp profiles"
+          echo "- allowPrivilegeEscalation: true"
+          echo "- Writable root filesystems"
+          echo "- Excessive Linux capabilities"
+          echo ""
+          echo "Migration priority recommendations:"
+          echo "1. High: Public-facing applications"
+          echo "2. Medium: Internal APIs and databases"
+          echo "3. Low: Development and testing workloads"
+          echo ""
+          echo "Analysis complete!"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+
+---
+# Services for testing connectivity during migration
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-app-service
+  namespace: migration-assessment
+spec:
+  selector:
+    app: legacy-app
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-app-step1-service
+  namespace: migration-warning
+spec:
+  selector:
+    app: legacy-app-step1
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-app-step2-service
+  namespace: migration-baseline
+spec:
+  selector:
+    app: legacy-app-step2
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-app-final-service
+  namespace: migration-restricted
+spec:
+  selector:
+    app: legacy-app-final
+  ports:
+  - port: 8080
+    targetPort: 8080
+
+# MIGRATION TIMELINE AND STRATEGY:
+#
+# PHASE 1 - Assessment (Week 1-2):
+# - Deploy assessment namespace with audit/warn
+# - Run security analysis job
+# - Document current violations
+# - Prioritize applications for migration
+# - Create migration plan with timelines
+#
+# PHASE 2 - Warning Implementation (Week 3-4):
+# - Add warning labels to production namespaces
+# - Begin fixing high-priority violations
+# - Test fixes in warning namespace
+# - Train development teams on security contexts
+# - Document common patterns and solutions
+#
+# PHASE 3 - Baseline Enforcement (Week 5-8):
+# - Enforce baseline in non-critical namespaces first
+# - Migrate applications one by one
+# - Fix any remaining baseline violations
+# - Monitor for regression in new deployments
+# - Add restricted warnings for future planning
+#
+# PHASE 4 - Restricted Implementation (Week 9-12):
+# - Plan restricted compliance for high-security workloads
+# - Implement read-only root filesystems
+# - Remove unnecessary capabilities
+# - Full seccomp profile implementation
+# - Complete security posture review
+
+# TESTING COMMANDS:
+#
+# 1. Deploy migration phases:
+# kubectl apply -f 05-migration-strategy.yaml
+#
+# 2. Check security analysis job results:
+# kubectl logs job/security-analysis-job -n migration-assessment
+#
+# 3. Compare deployments across migration phases:
+# kubectl get pods -n migration-assessment
+# kubectl get pods -n migration-warning  
+# kubectl get pods -n migration-baseline
+# kubectl get pods -n migration-restricted
+#
+# 4. Examine security contexts at each phase:
+# kubectl get pod -l app=legacy-app -n migration-assessment -o yaml | grep -A20 securityContext
+# kubectl get pod -l app=legacy-app-step1 -n migration-warning -o yaml | grep -A20 securityContext
+# kubectl get pod -l app=legacy-app-step2 -n migration-baseline -o yaml | grep -A20 securityContext
+# kubectl get pod -l app=legacy-app-final -n migration-restricted -o yaml | grep -A20 securityContext
+#
+# 5. Test connectivity at each phase:
+# kubectl run test --image=busybox:1.36 --rm -it --restart=Never -- nc -zv legacy-app-service.migration-assessment.svc.cluster.local 80
+# kubectl run test --image=busybox:1.36 --rm -it --restart=Never -- nc -zv legacy-app-step1-service.migration-warning.svc.cluster.local 8080
+# kubectl run test --image=busybox:1.36 --rm -it --restart=Never -- nc -zv legacy-app-step2-service.migration-baseline.svc.cluster.local 8080
+# kubectl run test --image=busybox:1.36 --rm -it --restart=Never -- nc -zv legacy-app-final-service.migration-restricted.svc.cluster.local 8080
+#
+# 6. Check namespace security labels:
+# kubectl get namespace -l migration-phase --show-labels
+#
+# 7. Simulate namespace migration by updating labels:
+# kubectl label namespace migration-warning pod-security.kubernetes.io/enforce=baseline --overwrite
+#
+# 8. View security violations and warnings:
+# kubectl get events -A --field-selector type=Warning | grep -i pod.security
+#
+# 9. Test user ID changes across phases:
+# kubectl exec -it $(kubectl get pod -l app=legacy-app -n migration-assessment -o jsonpath='{.items[0].metadata.name}') -n migration-assessment -- id
+# kubectl exec -it $(kubectl get pod -l app=legacy-app-final -n migration-restricted -o jsonpath='{.items[0].metadata.name}') -n migration-restricted -- id
+#
+# 10. Verify final security compliance:
+# kubectl exec -it $(kubectl get pod -l app=legacy-app-final -n migration-restricted -o jsonpath='{.items[0].metadata.name}') -n migration-restricted -- touch /test  # Should fail
+# kubectl exec -it $(kubectl get pod -l app=legacy-app-final -n migration-restricted -o jsonpath='{.items[0].metadata.name}') -n migration-restricted -- capsh --print

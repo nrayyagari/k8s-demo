@@ -1,0 +1,313 @@
+# Security Context Deep Dive - Understanding Pod and Container Security
+
+---
+# Namespace for security context exploration
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security-context-demo
+  labels:
+    purpose: security-exploration
+    security-level: learning
+
+---
+# 1. DEFAULT BEHAVIOR: No security context (dangerous)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: default-behavior
+  namespace: security-context-demo
+  labels:
+    example: default-no-security
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.27
+    ports:
+    - containerPort: 80
+  # NO securityContext = inherits from container image
+  # - Usually runs as root (UID 0)
+  # - Has all default capabilities
+  # - Can write anywhere in filesystem
+
+---
+# 2. POD-LEVEL SECURITY CONTEXT: Applies to all containers
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-level-security
+  namespace: security-context-demo
+  labels:
+    example: pod-level-context
+spec:
+  # Pod security context affects all containers
+  securityContext:
+    runAsUser: 1000      # All containers run as UID 1000
+    runAsGroup: 1000     # All containers run as GID 1000
+    runAsNonRoot: true   # Ensure no container runs as root
+    fsGroup: 2000        # Volume ownership group
+  containers:
+  - name: nginx
+    image: nginx:1.27
+    ports:
+    - containerPort: 8080
+  - name: sidecar
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+
+---
+# 3. CONTAINER-LEVEL OVERRIDE: Container overrides pod settings
+apiVersion: v1
+kind: Pod
+metadata:
+  name: container-override
+  namespace: security-context-demo
+  labels:
+    example: container-override
+spec:
+  securityContext:
+    runAsUser: 1000      # Pod default: UID 1000
+    runAsGroup: 1000     # Pod default: GID 1000
+  containers:
+  - name: nginx
+    image: nginx:1.27
+    ports:
+    - containerPort: 8080
+    # This container uses pod-level settings (UID 1000)
+  - name: special-app
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    securityContext:
+      runAsUser: 2000    # Override: This container runs as UID 2000
+      runAsGroup: 2000   # Override: This container runs as GID 2000
+
+---
+# 4. CAPABILITIES MANAGEMENT: Control Linux capabilities
+apiVersion: v1
+kind: Pod
+metadata:
+  name: capabilities-demo
+  namespace: security-context-demo
+  labels:
+    example: capabilities-control
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+  containers:
+  - name: minimal-caps
+    image: nginx:1.27
+    ports:
+    - containerPort: 8080
+    securityContext:
+      capabilities:
+        drop:
+        - ALL              # Drop all capabilities
+        add:
+        - NET_BIND_SERVICE # Add only what's needed for port binding
+  - name: no-caps
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    securityContext:
+      capabilities:
+        drop:
+        - ALL              # No capabilities at all
+
+---
+# 5. FILESYSTEM SECURITY: Read-only root filesystem
+apiVersion: v1
+kind: Pod
+metadata:
+  name: readonly-filesystem
+  namespace: security-context-demo
+  labels:
+    example: readonly-fs
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+  containers:
+  - name: readonly-nginx
+    image: nginx:1.27
+    ports:
+    - containerPort: 8080
+    securityContext:
+      readOnlyRootFilesystem: true  # Root filesystem is read-only
+      allowPrivilegeEscalation: false
+    # Provide writable directories where nginx needs them
+    volumeMounts:
+    - name: tmp
+      mountPath: /tmp
+    - name: var-cache
+      mountPath: /var/cache/nginx
+    - name: var-run
+      mountPath: /var/run
+    - name: nginx-config
+      mountPath: /etc/nginx/conf.d
+  volumes:
+  - name: tmp
+    emptyDir: {}
+  - name: var-cache
+    emptyDir: {}  
+  - name: var-run
+    emptyDir: {}
+  - name: nginx-config
+    configMap:
+      name: nginx-config
+
+---
+# ConfigMap for nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: security-context-demo
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name localhost;
+        location / {
+            root /usr/share/nginx/html;
+            index index.html index.htm;
+        }
+        error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+            root /usr/share/nginx/html;
+        }
+    }
+
+---
+# 6. SECCOMP PROFILES: System call filtering
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seccomp-demo
+  namespace: security-context-demo
+  labels:
+    example: seccomp-security
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    # Pod-level seccomp profile
+    seccompProfile:
+      type: RuntimeDefault  # Use container runtime's default seccomp profile
+  containers:
+  - name: secure-app
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      # Container can override seccomp profile
+      seccompProfile:
+        type: RuntimeDefault
+
+---
+# 7. VOLUME SECURITY: fsGroup and fsGroupChangePolicy
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-security
+  namespace: security-context-demo
+  labels:
+    example: volume-ownership
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 3000                        # Volumes owned by group 3000
+    fsGroupChangePolicy: "OnRootMismatch" # Only change ownership if needed
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    volumeMounts:
+    - name: data-volume
+      mountPath: /data
+  volumes:
+  - name: data-volume
+    emptyDir: {}
+
+---
+# Test pod to examine security contexts
+apiVersion: v1
+kind: Pod
+metadata:
+  name: security-inspector
+  namespace: security-context-demo
+  labels:
+    role: inspector
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+  containers:
+  - name: inspector
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+
+# EXPLANATION OF SECURITY CONTEXT HIERARCHY:
+#
+# 1. Container Image Default → Pod securityContext → Container securityContext
+#    (Container-level settings override pod-level settings)
+#
+# 2. Key Security Context Fields:
+#    - runAsUser/runAsGroup: Control process UID/GID
+#    - runAsNonRoot: Boolean check for non-root execution
+#    - fsGroup: Group ownership for mounted volumes
+#    - capabilities: Linux capabilities (fine-grained privileges)
+#    - readOnlyRootFilesystem: Make / read-only
+#    - allowPrivilegeEscalation: Control setuid/setgid
+#    - seccompProfile: System call filtering
+#
+# 3. Volume Security:
+#    - fsGroup: All volume mounts get this group ownership
+#    - fsGroupChangePolicy: Controls when ownership changes happen
+
+# TESTING COMMANDS:
+#
+# 1. Deploy all security context examples:
+# kubectl apply -f 01-security-context-demo.yaml
+#
+# 2. Compare user/group IDs across pods:
+# kubectl exec -it default-behavior -n security-context-demo -- id
+# kubectl exec -it pod-level-security -n security-context-demo -c nginx -- id
+# kubectl exec -it pod-level-security -n security-context-demo -c sidecar -- id
+# kubectl exec -it container-override -n security-context-demo -c nginx -- id
+# kubectl exec -it container-override -n security-context-demo -c special-app -- id
+#
+# 3. Check Linux capabilities:
+# kubectl exec -it capabilities-demo -n security-context-demo -c minimal-caps -- capsh --print
+# kubectl exec -it capabilities-demo -n security-context-demo -c no-caps -- capsh --print
+#
+# 4. Test filesystem write permissions:
+# kubectl exec -it default-behavior -n security-context-demo -- touch /test-write
+# kubectl exec -it readonly-filesystem -n security-context-demo -- touch /test-write  # Should fail
+# kubectl exec -it readonly-filesystem -n security-context-demo -- touch /tmp/test-write  # Should work
+#
+# 5. Check volume ownership:
+# kubectl exec -it volume-security -n security-context-demo -- ls -la /data
+# kubectl exec -it volume-security -n security-context-demo -- touch /data/test-file
+# kubectl exec -it volume-security -n security-context-demo -- ls -la /data/test-file
+#
+# 6. Inspect seccomp profiles (if supported):
+# kubectl exec -it seccomp-demo -n security-context-demo -- grep Seccomp /proc/self/status
+#
+# 7. View complete security context in pod specs:
+# kubectl get pod pod-level-security -n security-context-demo -o yaml | grep -A30 securityContext
+# kubectl get pod container-override -n security-context-demo -o yaml | grep -A30 securityContext
+#
+# 8. Check process trees and security:
+# kubectl exec -it security-inspector -n security-context-demo -- ps aux
+# kubectl exec -it security-inspector -n security-context-demo -- cat /proc/1/status | grep -E "Uid|Gid|Groups"
