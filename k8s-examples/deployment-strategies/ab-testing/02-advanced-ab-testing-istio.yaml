@@ -1,0 +1,658 @@
+# Advanced A/B Testing with Istio Service Mesh
+# Purpose: Sophisticated A/B testing with precise traffic control and observability
+
+# WHY: Need fine-grained traffic control and advanced experiment management
+# PROBLEM: Basic A/B testing lacks precise control and detailed observability
+# SOLUTION: Use Istio service mesh for advanced routing and comprehensive metrics
+
+# NOTE: This example requires Istio service mesh
+# Install: istioctl install --set values.defaultRevision=default
+#         kubectl label namespace default istio-injection=enabled
+
+---
+# SHARED DEPLOYMENT (Both variants in one deployment)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-experiment
+  labels:
+    app: webapp
+    experiment: checkout-optimization
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        
+        # Experiment configuration
+        env:
+        - name: APP_VERSION
+          value: "v1.0.0"
+        - name: EXPERIMENT_ID
+          value: "exp-checkout-002"
+        - name: EXPERIMENT_NAME
+          value: "checkout-optimization"
+        
+        # Health checks
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+---
+# KUBERNETES SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+  labels:
+    app: webapp
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp
+  ports:
+  - port: 80
+    targetPort: 8080
+    name: http
+  - port: 9090
+    targetPort: 9090
+    name: metrics
+
+---
+# ISTIO DESTINATION RULE (Define experiment subsets)
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: webapp-destination-rule
+spec:
+  host: webapp-service
+  subsets:
+  - name: control
+    labels:
+      app: webapp
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 50
+        http:
+          http1MaxPendingRequests: 10
+          maxRequestsPerConnection: 2
+  - name: treatment
+    labels:
+      app: webapp
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 50
+        http:
+          http1MaxPendingRequests: 10
+          maxRequestsPerConnection: 2
+
+---
+# ISTIO VIRTUAL SERVICE (Advanced traffic routing)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: webapp-ab-test-vs
+spec:
+  hosts:
+  - webapp-service
+  - myapp.company.com
+  gateways:
+  - webapp-gateway
+  - mesh
+  http:
+  # EXPERIMENT EXCLUSION RULES
+  - match:
+    - headers:
+        x-experiment-exclude:
+          exact: "true"
+    route:
+    - destination:
+        host: webapp-service
+        subset: control
+      weight: 100
+      headers:
+        request:
+          add:
+            x-variant: "control"
+            x-experiment-excluded: "true"
+  
+  # BOT TRAFFIC EXCLUSION
+  - match:
+    - headers:
+        user-agent:
+          regex: ".*(bot|crawler|spider|scraper).*"
+    route:
+    - destination:
+        host: webapp-service
+        subset: control
+      weight: 100
+      headers:
+        request:
+          add:
+            x-variant: "control"
+            x-bot-traffic: "true"
+  
+  # INTERNAL TRAFFIC (employees, QA)
+  - match:
+    - headers:
+        x-user-type:
+          exact: "internal"
+    route:
+    - destination:
+        host: webapp-service
+        subset: treatment
+      weight: 100
+      headers:
+        request:
+          add:
+            x-variant: "treatment"
+            x-internal-user: "true"
+  
+  # GEOGRAPHIC SEGMENTATION
+  - match:
+    - headers:
+        x-country:
+          exact: "US"
+    route:
+    - destination:
+        host: webapp-service
+        subset: control
+      weight: 60    # 60% control
+      headers:
+        request:
+          add:
+            x-variant: "control"
+            x-geo-segment: "US"
+    - destination:
+        host: webapp-service
+        subset: treatment
+      weight: 40    # 40% treatment
+      headers:
+        request:
+          add:
+            x-variant: "treatment"
+            x-geo-segment: "US"
+  
+  # USER COHORT BASED ROUTING
+  - match:
+    - headers:
+        x-user-cohort:
+          exact: "premium"
+    route:
+    - destination:
+        host: webapp-service
+        subset: control
+      weight: 70    # Conservative for premium users
+      headers:
+        request:
+          add:
+            x-variant: "control"
+            x-user-cohort: "premium"
+    - destination:
+        host: webapp-service
+        subset: treatment
+      weight: 30
+      headers:
+        request:
+          add:
+            x-variant: "treatment"
+            x-user-cohort: "premium"
+  
+  # DEFAULT TRAFFIC SPLIT (50/50)
+  - route:
+    - destination:
+        host: webapp-service
+        subset: control
+      weight: 50
+      headers:
+        request:
+          add:
+            x-variant: "control"
+            x-segment: "default"
+    - destination:
+        host: webapp-service
+        subset: treatment
+      weight: 50
+      headers:
+        request:
+          add:
+            x-variant: "treatment"
+            x-segment: "default"
+    
+    # ADVANCED ROUTING FEATURES
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,reset,connect-failure
+    
+    # FAULT INJECTION FOR TESTING
+    fault:
+      delay:
+        percentage:
+          value: 0.1          # 0.1% delay injection
+        fixedDelay: 5s
+      abort:
+        percentage:
+          value: 0.01         # 0.01% abort injection
+        httpStatus: 503
+
+---
+# ISTIO GATEWAY
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: webapp-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - myapp.company.com
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: webapp-tls-secret
+    hosts:
+    - myapp.company.com
+
+---
+# EXPERIMENT CONFIGURATION CONFIGMAP
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: experiment-config
+data:
+  experiment.yaml: |
+    experiment:
+      id: "exp-checkout-002"
+      name: "checkout-optimization"
+      description: "Test impact of streamlined checkout flow on conversion"
+      
+      # Experiment timeline
+      start_time: "2025-08-01T00:00:00Z"
+      end_time: "2025-08-21T23:59:59Z"
+      
+      # Traffic allocation
+      allocation:
+        control: 0.5
+        treatment: 0.5
+      
+      # Segmentation rules
+      segments:
+        - name: "premium_users"
+          criteria: "x-user-cohort: premium"
+          allocation:
+            control: 0.7
+            treatment: 0.3
+        - name: "us_users"
+          criteria: "x-country: US"
+          allocation:
+            control: 0.6
+            treatment: 0.4
+        - name: "mobile_users"
+          criteria: "x-device-type: mobile"
+          allocation:
+            control: 0.4
+            treatment: 0.6
+      
+      # Success metrics
+      metrics:
+        primary:
+          - name: "checkout_completion_rate"
+            description: "Percentage of users who complete checkout"
+            type: "conversion"
+            goal: "increase"
+            baseline: 0.15
+            mde: 0.05
+        secondary:
+          - name: "checkout_abandonment_rate" 
+            description: "Percentage who abandon during checkout"
+            type: "conversion"
+            goal: "decrease"
+          - name: "time_to_checkout"
+            description: "Average time from cart to completion"
+            type: "duration"
+            goal: "decrease"
+      
+      # Guardrail metrics
+      guardrails:
+        - name: "page_load_time"
+          threshold: 3000
+          type: "performance"
+        - name: "error_rate"
+          threshold: 0.02
+          type: "reliability"
+        - name: "revenue_per_user"
+          threshold: -0.05
+          type: "business"
+      
+      # Statistical configuration
+      statistics:
+        confidence_level: 0.95
+        power: 0.8
+        minimum_sample_size: 5000
+        multiple_testing_correction: "bonferroni"
+
+---
+# PROMETHEUS SERVICE MONITOR
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: webapp-experiment-monitor
+spec:
+  selector:
+    matchLabels:
+      app: webapp
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_label_version]
+      targetLabel: variant
+    - sourceLabels: [__meta_kubernetes_pod_annotation_experiment_id]
+      targetLabel: experiment_id
+
+---
+# GRAFANA DASHBOARD CONFIGMAP
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ab-test-dashboard
+data:
+  dashboard.json: |
+    {
+      "dashboard": {
+        "title": "A/B Test: Checkout Optimization",
+        "panels": [
+          {
+            "title": "Traffic Distribution",
+            "type": "piechart",
+            "targets": [
+              {
+                "expr": "sum(rate(istio_requests_total{destination_service_name=\"webapp-service\"}[5m])) by (destination_version)",
+                "legendFormat": "{{destination_version}}"
+              }
+            ]
+          },
+          {
+            "title": "Conversion Rate by Variant",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "sum(rate(checkout_completions_total{variant=\"control\"}[1h])) / sum(rate(page_views_total{page=\"checkout\",variant=\"control\"}[1h]))",
+                "legendFormat": "Control"
+              },
+              {
+                "expr": "sum(rate(checkout_completions_total{variant=\"treatment\"}[1h])) / sum(rate(page_views_total{page=\"checkout\",variant=\"treatment\"}[1h]))",
+                "legendFormat": "Treatment"
+              }
+            ]
+          },
+          {
+            "title": "Response Time Distribution",
+            "type": "histogram",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{destination_service_name=\"webapp-service\"}[5m])) by (le, destination_version))",
+                "legendFormat": "p95 - {{destination_version}}"
+              }
+            ]
+          },
+          {
+            "title": "Error Rate by Variant",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sum(rate(istio_requests_total{destination_service_name=\"webapp-service\",response_code!~\"2.*\"}[5m])) by (destination_version) / sum(rate(istio_requests_total{destination_service_name=\"webapp-service\"}[5m])) by (destination_version)",
+                "legendFormat": "{{destination_version}}"
+              }
+            ]
+          }
+        ]
+      }
+    }
+
+# ADVANCED A/B TESTING FEATURES:
+#
+# 1. MULTI-VARIATE TESTING (A/B/C):
+# http:
+# - route:
+#   - destination:
+#       subset: control
+#     weight: 34    # Version A
+#   - destination:
+#       subset: treatment-b
+#     weight: 33    # Version B  
+#   - destination:
+#       subset: treatment-c
+#     weight: 33    # Version C
+#
+# 2. STAGED ROLLOUT DURING EXPERIMENT:
+# Week 1: 80% control, 20% treatment
+# Week 2: 60% control, 40% treatment  
+# Week 3: 50% control, 50% treatment
+#
+# 3. REAL-TIME TRAFFIC ADJUSTMENT:
+# kubectl patch virtualservice webapp-ab-test-vs --type='merge' -p='
+# spec:
+#   http:
+#   - route:
+#     - destination:
+#         subset: control
+#       weight: 30
+#     - destination:
+#         subset: treatment
+#       weight: 70'
+
+# EXPERIMENT MONITORING COMMANDS:
+#
+# 1. Check traffic distribution:
+# kubectl exec -it istio-proxy-pod -c istio-proxy -- \
+#   curl -s localhost:15000/stats | grep webapp_service
+#
+# 2. View experiment metrics:
+# kubectl port-forward svc/prometheus 9090:9090
+# # Navigate to http://localhost:9090
+#
+# 3. Monitor with Kiali:
+# istioctl dashboard kiali
+# # Check traffic flow and success rates
+#
+# 4. Analyze with Jaeger:
+# istioctl dashboard jaeger
+# # Trace request paths through variants
+
+# STATISTICAL ANALYSIS INTEGRATION:
+#
+# Export metrics for analysis:
+# kubectl exec prometheus-pod -- \
+#   promtool query instant \
+#   'sum(rate(checkout_completions_total[24h])) by (variant)' \
+#   > experiment_results.json
+#
+# Python statistical analysis:
+# import scipy.stats as stats
+# 
+# # Control group results
+# control_conversions = 450
+# control_users = 5000
+# control_rate = control_conversions / control_users
+# 
+# # Treatment group results  
+# treatment_conversions = 520
+# treatment_users = 5000
+# treatment_rate = treatment_conversions / treatment_users
+# 
+# # Chi-square test
+# chi2, p_value = stats.chi2_contingency([
+#     [control_conversions, control_users - control_conversions],
+#     [treatment_conversions, treatment_users - treatment_conversions]
+# ])[:2]
+# 
+# print(f"Control conversion rate: {control_rate:.3f}")
+# print(f"Treatment conversion rate: {treatment_rate:.3f}")
+# print(f"Relative improvement: {(treatment_rate/control_rate - 1)*100:.1f}%")
+# print(f"P-value: {p_value:.4f}")
+# print(f"Statistically significant: {p_value < 0.05}")
+
+# AUTOMATED EXPERIMENT MANAGEMENT:
+#
+# Experiment controller (custom operator):
+# apiVersion: experiments.company.com/v1
+# kind: Experiment
+# metadata:
+#   name: checkout-optimization
+# spec:
+#   hypothesis: "Streamlined checkout increases conversion by 10%"
+#   duration: 14d
+#   allocation:
+#     control: 50%
+#     treatment: 50%
+#   successCriteria:
+#     primary:
+#       metric: checkout_completion_rate
+#       improvement: ">5%"
+#       significance: 0.05
+#   guardrails:
+#     error_rate: "<2%"
+#     latency_p95: "<2000ms"
+#   autoStop:
+#     enabled: true
+#     conditions:
+#       - guardrail_violation
+#       - statistical_significance_reached
+#       - sample_size_achieved
+
+# GRADUAL TRAFFIC SHIFT DURING EXPERIMENT:
+#
+# Day 1-3: 90% control, 10% treatment (ramp up)
+# kubectl patch virtualservice webapp-ab-test-vs --type='merge' -p='
+# spec:
+#   http:
+#   - route:
+#     - destination:
+#         subset: control
+#       weight: 90
+#     - destination:
+#         subset: treatment
+#       weight: 10'
+#
+# Day 4-10: 50% control, 50% treatment (full experiment) 
+# kubectl patch virtualservice webapp-ab-test-vs --type='merge' -p='
+# spec:
+#   http:
+#   - route:
+#     - destination:
+#         subset: control
+#       weight: 50
+#     - destination:  
+#         subset: treatment
+#       weight: 50'
+#
+# Day 11-14: Winner gets increasing traffic
+# kubectl patch virtualservice webapp-ab-test-vs --type='merge' -p='
+# spec:
+#   http:
+#   - route:
+#     - destination:
+#         subset: control
+#       weight: 20
+#     - destination:
+#         subset: treatment
+#       weight: 80'
+
+# EXPERIMENT CONCLUSION AUTOMATION:
+#
+# Automated winner selection:
+# if experiment.statistical_significance_achieved() and \
+#    experiment.sample_size_sufficient() and \
+#    experiment.guardrails_not_violated():
+#     
+#     winner = experiment.get_winning_variant()
+#     
+#     # Gradually shift traffic to winner
+#     traffic_controller.shift_traffic(
+#         from_variant="control",
+#         to_variant=winner,
+#         steps=[60, 80, 100],
+#         step_duration="2h"
+#     )
+#     
+#     # Update deployment with winning configuration
+#     deployment_controller.update_production(
+#         variant=winner,
+#         config=experiment.get_variant_config(winner)
+#     )
+#     
+#     # Archive experiment results
+#     results_store.archive_experiment(experiment.id, results)
+
+# PRODUCTION BEST PRACTICES:
+#
+# 1. EXPERIMENT HYGIENE:
+# - Clear hypothesis and success criteria
+# - Sufficient sample size calculations
+# - Proper randomization and user assignment
+# - Isolation from other experiments
+#
+# 2. MONITORING AND ALERTS:
+# - Real-time guardrail monitoring
+# - Statistical significance tracking
+# - Performance regression detection
+# - Business metric impact alerts
+#
+# 3. ETHICAL CONSIDERATIONS:
+# - User consent and privacy protection
+# - Fair treatment of all user groups
+# - Transparent data collection practices
+# - Immediate stop if harmful effects detected
+#
+# 4. TECHNICAL SAFEGUARDS:
+# - Circuit breakers for performance issues
+# - Automatic rollback on guardrail violations
+# - Comprehensive logging and auditability
+# - Isolation of experiment traffic

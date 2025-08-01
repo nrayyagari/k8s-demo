@@ -1,0 +1,427 @@
+# SIMPLE DEPLOYMENT STRATEGIES: Start Here
+# Purpose: Quick reference guide for all deployment strategies
+
+# This file provides minimal working examples of each deployment strategy
+# Use these as starting points, then explore detailed examples in subdirectories
+
+---
+# 1. ROLLING UPDATE (Default Kubernetes Strategy)
+# WHY: Zero-downtime updates with gradual pod replacement
+# WHEN: Most applications, default choice
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-rolling
+  labels:
+    strategy: rolling-update
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1    # Only 1 pod down at a time
+      maxSurge: 1          # Only 1 extra pod during update
+  selector:
+    matchLabels:
+      app: app-rolling
+  template:
+    metadata:
+      labels:
+        app: app-rolling
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        readinessProbe:    # CRITICAL: Controls when pod receives traffic
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 2
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-rolling-service
+spec:
+  selector:
+    app: app-rolling
+  ports:
+  - port: 80
+    targetPort: 80
+
+# USAGE:
+# kubectl apply -f SIMPLE-DEPLOYMENT-STRATEGIES.yaml
+# kubectl set image deployment/app-rolling app=nginx:1.27-alpine
+# kubectl rollout status deployment/app-rolling
+# kubectl rollout undo deployment/app-rolling  # Rollback if needed
+
+---
+# 2. BLUE-GREEN DEPLOYMENT
+# WHY: Instant rollback capability, zero mixed versions
+# WHEN: Critical apps, complex startup, sufficient resources
+
+# BLUE (Current Production)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-blue
+  labels:
+    strategy: blue-green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: blue
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: VERSION
+          value: "blue"
+
+---
+# GREEN (New Version)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-green
+  labels:
+    strategy: blue-green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+      version: green
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: green
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine  # New version goes here
+        ports:
+        - containerPort: 80
+        env:
+        - name: VERSION
+          value: "green"
+
+---
+# SERVICE (Controls which version gets traffic)
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-bluegreen-service
+spec:
+  selector:
+    app: myapp
+    version: blue    # CHANGE THIS TO SWITCH TRAFFIC: blue → green
+  ports:
+  - port: 80
+    targetPort: 80
+
+# USAGE:
+# kubectl apply -f SIMPLE-DEPLOYMENT-STRATEGIES.yaml
+# Test green: kubectl port-forward deployment/app-green 8080:80
+# Switch: kubectl patch service app-bluegreen-service -p '{"spec":{"selector":{"version":"green"}}}'
+# Rollback: kubectl patch service app-bluegreen-service -p '{"spec":{"selector":{"version":"blue"}}}'
+
+---
+# 3. CANARY DEPLOYMENT
+# WHY: Gradual rollout, limited blast radius, real user testing
+# WHEN: Risk-averse environments, need user feedback
+
+# STABLE (90% of traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-stable
+  labels:
+    strategy: canary
+spec:
+  replicas: 9     # 90% of pods
+  selector:
+    matchLabels:
+      app: myapp
+      version: stable
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: stable
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: VERSION
+          value: "stable"
+
+---
+# CANARY (10% of traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-canary
+  labels:
+    strategy: canary
+spec:
+  replicas: 1     # 10% of pods
+  selector:
+    matchLabels:
+      app: myapp
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: canary
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine  # New version goes here
+        ports:
+        - containerPort: 80
+        env:
+        - name: VERSION
+          value: "canary"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-canary-service
+spec:
+  selector:
+    app: myapp    # Routes to BOTH stable and canary
+  ports:
+  - port: 80
+    targetPort: 80
+
+# USAGE:
+# kubectl apply -f SIMPLE-DEPLOYMENT-STRATEGIES.yaml
+# Test traffic split: for i in {1..20}; do curl -s http://app-canary-service | grep VERSION; done
+# Increase canary: kubectl scale deployment app-stable --replicas=7; kubectl scale deployment app-canary --replicas=3
+# Promote: kubectl scale deployment app-stable --replicas=0; kubectl scale deployment app-canary --replicas=10
+
+---
+# 4. A/B TESTING
+# WHY: Measure user behavior impact, data-driven decisions
+# WHEN: Testing UI changes, optimizing conversion rates
+
+# CONTROL GROUP (Version A)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-control
+  labels:
+    strategy: ab-test
+spec:
+  replicas: 5     # 50% of traffic
+  selector:
+    matchLabels:
+      app: myapp
+      variant: control
+  template:
+    metadata:
+      labels:
+        app: myapp
+        variant: control
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: VARIANT
+          value: "control"
+        - name: BUTTON_COLOR
+          value: "blue"     # Current design
+
+---
+# TREATMENT GROUP (Version B)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-treatment
+  labels:
+    strategy: ab-test
+spec:
+  replicas: 5     # 50% of traffic
+  selector:
+    matchLabels:
+      app: myapp
+      variant: treatment
+  template:
+    metadata:
+      labels:
+        app: myapp
+        variant: treatment
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: VARIANT
+          value: "treatment"
+        - name: BUTTON_COLOR
+          value: "green"    # New design to test
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-abtest-service
+spec:
+  selector:
+    app: myapp    # Routes to BOTH control and treatment
+  ports:
+  - port: 80
+    targetPort: 80
+
+# USAGE:
+# kubectl apply -f SIMPLE-DEPLOYMENT-STRATEGIES.yaml
+# Test variants: for i in {1..20}; do curl -s http://app-abtest-service | grep VARIANT; done
+# Measure: Track conversion rates for each variant
+# Decide: Keep winning variant, remove losing variant
+
+---
+# 5. FEATURE FLAGS
+# WHY: Deploy code without releasing features, instant toggles
+# WHEN: Want to decouple deployment from release
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feature-flags
+data:
+  # Boolean flags
+  new_dashboard_enabled: "false"
+  dark_mode_enabled: "true"
+  
+  # Percentage flags
+  new_feature_percentage: "25"  # 25% of users see new feature
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-feature-flags
+  labels:
+    strategy: feature-flags
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: app-feature-flags
+  template:
+    metadata:
+      labels:
+        app: app-feature-flags
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        env:
+        # Feature flags from ConfigMap
+        - name: FEATURE_NEW_DASHBOARD
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags
+              key: new_dashboard_enabled
+        - name: FEATURE_DARK_MODE
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags
+              key: dark_mode_enabled
+        - name: FEATURE_NEW_PERCENTAGE
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags
+              key: new_feature_percentage
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-feature-flags-service
+spec:
+  selector:
+    app: app-feature-flags
+  ports:
+  - port: 80
+    targetPort: 80
+
+# USAGE:
+# kubectl apply -f SIMPLE-DEPLOYMENT-STRATEGIES.yaml
+# Enable feature: kubectl patch configmap feature-flags -p '{"data":{"new_dashboard_enabled":"true"}}'
+# Update percentage: kubectl patch configmap feature-flags -p '{"data":{"new_feature_percentage":"50"}}'
+# Restart to apply: kubectl rollout restart deployment/app-feature-flags
+
+# QUICK DECISION GUIDE:
+#
+# Choose Rolling Update if:
+# ✅ Standard application deployment
+# ✅ Can tolerate brief mixed versions
+# ✅ Want simple, built-in Kubernetes solution
+#
+# Choose Blue-Green if:
+# ✅ Need instant rollback capability
+# ✅ Cannot tolerate mixed versions
+# ✅ Have sufficient infrastructure (2x resources)
+# ✅ Critical applications
+#
+# Choose Canary if:
+# ✅ Want to limit blast radius
+# ✅ Need gradual user exposure
+# ✅ Have good monitoring and metrics
+# ✅ Risk-averse deployment approach
+#
+# Choose A/B Testing if:
+# ✅ Testing user experience changes
+# ✅ Need statistical validation
+# ✅ Optimizing business metrics
+# ✅ Have significant user traffic
+#
+# Choose Feature Flags if:
+# ✅ Want to decouple deploy from release
+# ✅ Need instant feature toggling
+# ✅ Running experiments or gradual rollouts
+# ✅ Want kill switches for features
+
+# MONITORING COMMANDS:
+# kubectl get deployments -l strategy=rolling-update
+# kubectl get deployments -l strategy=blue-green
+# kubectl get deployments -l strategy=canary  
+# kubectl get deployments -l strategy=ab-test
+# kubectl get deployments -l strategy=feature-flags
+
+# CLEANUP COMMANDS:
+# kubectl delete deployments,services -l strategy=rolling-update
+# kubectl delete deployments,services -l strategy=blue-green
+# kubectl delete deployments,services -l strategy=canary
+# kubectl delete deployments,services -l strategy=ab-test
+# kubectl delete deployments,services,configmaps -l strategy=feature-flags

@@ -1,0 +1,490 @@
+# Basic Feature Flags Example
+# Purpose: Learn how to use feature flags for controlled feature rollouts
+
+# WHY: Need to deploy code without exposing features until ready
+# PROBLEM: Want to deploy frequently but control when features are available to users
+# SOLUTION: Use feature flags to enable/disable features at runtime without code deployment
+
+---
+# APPLICATION DEPLOYMENT WITH FEATURE FLAGS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-feature-flags
+  labels:
+    app: webapp
+    deployment-type: feature-flags
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 8080
+        
+        # Feature flag configuration via environment variables
+        env:
+        # FEATURE FLAGS - Global toggles
+        - name: FEATURE_NEW_DASHBOARD
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags-config
+              key: new_dashboard_enabled
+        
+        - name: FEATURE_DARK_MODE
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags-config
+              key: dark_mode_enabled
+        
+        - name: FEATURE_PREMIUM_FEATURES
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags-config
+              key: premium_features_enabled
+        
+        - name: FEATURE_BETA_API
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags-config
+              key: beta_api_enabled
+        
+        # FEATURE FLAG PERCENTAGES - Gradual rollout
+        - name: FEATURE_NEW_CHECKOUT_PERCENTAGE
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags-config
+              key: new_checkout_percentage
+        
+        - name: FEATURE_RECOMMENDATIONS_PERCENTAGE
+          valueFrom:
+            configMapKeyRef:
+              name: feature-flags-config
+              key: recommendations_percentage
+        
+        # FEATURE FLAG SERVICE CONFIG
+        - name: FEATURE_FLAG_SERVICE_URL
+          value: "http://feature-flag-service:8080"
+        
+        - name: FEATURE_FLAG_REFRESH_INTERVAL
+          value: "30s"
+        
+        # Application configuration
+        - name: APP_VERSION
+          value: "v1.2.0"
+        
+        - name: ENVIRONMENT
+          value: "production"
+        
+        # Health checks
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        # Mount feature flags configuration
+        volumeMounts:
+        - name: feature-flags-volume
+          mountPath: /etc/feature-flags
+          readOnly: true
+      
+      volumes:
+      - name: feature-flags-volume
+        configMap:
+          name: feature-flags-config
+
+---
+# FEATURE FLAGS CONFIGURATION
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feature-flags-config
+  labels:
+    app: webapp
+    config-type: feature-flags
+data:
+  # BOOLEAN FLAGS (ON/OFF)
+  new_dashboard_enabled: "false"        # New dashboard UI
+  dark_mode_enabled: "true"             # Dark mode toggle
+  premium_features_enabled: "false"     # Premium feature set
+  beta_api_enabled: "false"             # Beta API endpoints
+  maintenance_mode_enabled: "false"     # Maintenance mode
+  
+  # PERCENTAGE FLAGS (GRADUAL ROLLOUT)
+  new_checkout_percentage: "10"         # 10% of users see new checkout
+  recommendations_percentage: "25"      # 25% see recommendations
+  search_v2_percentage: "0"             # Search v2 (disabled)
+  
+  # USER SEGMENT FLAGS
+  enterprise_features_enabled: "true"   # Features for enterprise users
+  mobile_features_enabled: "true"       # Mobile-specific features
+  
+  # ENVIRONMENT FLAGS
+  debug_mode_enabled: "false"           # Debug logging
+  analytics_enabled: "true"             # Analytics collection
+  
+  # FEATURE FLAG RULES (JSON configuration)
+  feature_rules.json: |
+    {
+      "new_dashboard": {
+        "enabled": false,
+        "description": "New dashboard with improved UX",
+        "rollout_strategy": "percentage",
+        "percentage": 0,
+        "user_segments": [],
+        "start_date": "2025-08-15T00:00:00Z",
+        "end_date": "2025-09-15T23:59:59Z"
+      },
+      "new_checkout": {
+        "enabled": true,
+        "description": "Streamlined checkout process",
+        "rollout_strategy": "percentage",
+        "percentage": 10,
+        "user_segments": ["beta_users"],
+        "conditions": {
+          "user_type": "premium",
+          "geographic_regions": ["US", "CA", "UK"]
+        }
+      },
+      "dark_mode": {
+        "enabled": true,
+        "description": "Dark mode theme",
+        "rollout_strategy": "all_users",
+        "user_preference": true
+      },
+      "beta_api": {
+        "enabled": false,
+        "description": "New API endpoints (v2)",
+        "rollout_strategy": "whitelist",
+        "whitelist": ["internal_team", "beta_partners"],
+        "requires_api_key": true
+      }
+    }
+
+---
+# FEATURE FLAG SERVICE (Simple implementation)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feature-flag-service
+  labels:
+    app: feature-flag-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: feature-flag-service
+  template:
+    metadata:
+      labels:
+        app: feature-flag-service
+    spec:
+      containers:
+      - name: feature-flag-service
+        image: nginx:1.27-alpine  # In production, use feature flag service like LaunchDarkly
+        ports:
+        - containerPort: 8080
+        
+        env:
+        - name: SERVICE_TYPE
+          value: "feature-flags"
+        
+        # Health checks
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 3
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        
+        # Feature flag service configuration
+        volumeMounts:
+        - name: service-config
+          mountPath: /etc/feature-flag-service
+      
+      volumes:
+      - name: service-config
+        configMap:
+          name: feature-flag-service-config
+
+---
+# FEATURE FLAG SERVICE CONFIGURATION
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feature-flag-service-config
+data:
+  service.yaml: |
+    feature_flag_service:
+      port: 8080
+      refresh_interval: 30s
+      
+      # Cache configuration
+      cache:
+        enabled: true
+        ttl: 300s
+        max_size: 1000
+      
+      # Flag evaluation rules
+      evaluation:
+        default_enabled: false
+        user_context_required: true
+        
+      # Metrics and monitoring
+      metrics:
+        enabled: true
+        endpoint: "/metrics"
+        
+      # Supported flag types
+      flag_types:
+        - boolean
+        - percentage
+        - string
+        - json
+
+---
+# SERVICE FOR FEATURE FLAG SERVICE
+apiVersion: v1
+kind: Service
+metadata:
+  name: feature-flag-service
+  labels:
+    app: feature-flag-service
+spec:
+  type: ClusterIP
+  selector:
+    app: feature-flag-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+
+---
+# SERVICE FOR MAIN APPLICATION
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+  labels:
+    app: webapp
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+
+# FEATURE FLAG IMPLEMENTATION PATTERNS:
+#
+# 1. BOOLEAN FLAGS (Simple ON/OFF)
+# if (featureFlags.isEnabled("new_dashboard")) {
+#   return renderNewDashboard();
+# } else {
+#   return renderOldDashboard();
+# }
+#
+# 2. PERCENTAGE ROLLOUT
+# const rolloutPercentage = featureFlags.getPercentage("new_checkout");
+# const userHash = hash(user.id) % 100;
+# if (userHash < rolloutPercentage) {
+#   return renderNewCheckout();
+# } else {
+#   return renderOldCheckout();
+# }
+#
+# 3. USER SEGMENT FLAGS
+# if (user.segment === "premium" && featureFlags.isEnabled("premium_features")) {
+#   return renderPremiumFeatures();
+# }
+#
+# 4. CONDITIONAL FLAGS
+# const flagConfig = featureFlags.getConfig("beta_api");
+# if (flagConfig.enabled && 
+#     flagConfig.conditions.geographic_regions.includes(user.region) &&
+#     user.type === flagConfig.conditions.user_type) {
+#   return enableBetaAPI();
+# }
+
+# FEATURE FLAG MANAGEMENT COMMANDS:
+#
+# 1. View current feature flag configuration:
+# kubectl get configmap feature-flags-config -o yaml
+#
+# 2. Enable a feature flag:
+# kubectl patch configmap feature-flags-config -p='{"data":{"new_dashboard_enabled":"true"}}'
+#
+# 3. Update rollout percentage:
+# kubectl patch configmap feature-flags-config -p='{"data":{"new_checkout_percentage":"25"}}'
+#
+# 4. Disable a feature flag immediately:
+# kubectl patch configmap feature-flags-config -p='{"data":{"beta_api_enabled":"false"}}'
+#
+# 5. Restart pods to pick up configuration changes:
+# kubectl rollout restart deployment/webapp-feature-flags
+#
+# 6. Monitor feature flag usage:
+# kubectl logs -l app=webapp --tail=100 | grep "feature_flag"
+
+# GRADUAL ROLLOUT STRATEGY:
+#
+# WEEK 1: Enable for internal users only
+# kubectl patch configmap feature-flags-config -p='{"data":{
+#   "new_checkout_percentage":"0",
+#   "internal_users_only":"true"
+# }}'
+#
+# WEEK 2: 5% of external users
+# kubectl patch configmap feature-flags-config -p='{"data":{
+#   "new_checkout_percentage":"5",
+#   "internal_users_only":"false"
+# }}'
+#
+# WEEK 3: 25% of users
+# kubectl patch configmap feature-flags-config -p='{"data":{
+#   "new_checkout_percentage":"25"
+# }}'
+#
+# WEEK 4: 50% of users
+# kubectl patch configmap feature-flags-config -p='{"data":{
+#   "new_checkout_percentage":"50"
+# }}'
+#
+# WEEK 5: 100% rollout (or remove flag entirely)
+# kubectl patch configmap feature-flags-config -p='{"data":{
+#   "new_checkout_percentage":"100"
+# }}'
+
+# TESTING FEATURE FLAGS:
+#
+# Test with feature enabled:
+# curl -H "X-Feature-New-Dashboard: enabled" http://webapp-service/dashboard
+#
+# Test with specific user context:
+# curl -H "X-User-ID: user123" \
+#      -H "X-User-Segment: premium" \
+#      http://webapp-service/features
+#
+# Test percentage rollout:
+# for i in {1..100}; do
+#   curl -H "X-User-ID: user$i" http://webapp-service/checkout | grep checkout_version
+# done | sort | uniq -c
+
+# FEATURE FLAG MONITORING:
+#
+# Monitor feature flag evaluation rates:
+# kubectl logs -l app=webapp | grep "feature_flag_evaluated" | \
+#   awk '{print $5}' | sort | uniq -c
+#
+# Check flag configuration reload:
+# kubectl logs -l app=webapp | grep "config_reloaded"
+#
+# Monitor errors related to feature flags:
+# kubectl logs -l app=webapp | grep -i "feature.*error"
+
+# EMERGENCY PROCEDURES:
+#
+# KILL SWITCH - Disable problematic feature immediately:
+# kubectl patch configmap feature-flags-config -p='{"data":{
+#   "problematic_feature_enabled":"false"
+# }}'
+# kubectl rollout restart deployment/webapp-feature-flags
+#
+# ROLLBACK FEATURE - Revert to previous configuration:
+# kubectl apply -f feature-flags-backup.yaml
+# kubectl rollout restart deployment/webapp-feature-flags
+#
+# MAINTENANCE MODE - Enable maintenance mode:
+# kubectl patch configmap feature-flags-config -p='{"data":{
+#   "maintenance_mode_enabled":"true"
+# }}'
+
+# FEATURE FLAG BEST PRACTICES:
+#
+# 1. NAMING CONVENTIONS:
+# - Use descriptive names: "new_checkout_flow" vs "feature_a"
+# - Include purpose: "dark_mode_ui", "beta_api_v2"
+# - Use consistent format: snake_case or camelCase
+#
+# 2. DOCUMENTATION:
+# - Document each flag's purpose and impact
+# - Include rollback procedures
+# - Set expiration dates for temporary flags
+#
+# 3. CLEANUP:
+# - Remove flags after full rollout (100%)
+# - Clean up unused flags regularly
+# - Archive flag history for analysis
+#
+# 4. MONITORING:
+# - Track flag evaluation performance
+# - Monitor business metrics during rollouts
+# - Set up alerts for flag-related errors
+#
+# 5. TESTING:
+# - Test both enabled and disabled states
+# - Verify percentage rollouts work correctly
+# - Test flag combinations don't conflict
+
+# PRODUCTION CONSIDERATIONS:
+#
+# 1. PERFORMANCE:
+# - Cache flag values to reduce lookups
+# - Use local config for critical path decisions
+# - Implement circuit breakers for flag service calls
+#
+# 2. SECURITY:
+# - Protect flag management endpoints
+# - Audit flag changes and who made them
+# - Use RBAC for flag modification permissions
+#
+# 3. RELIABILITY:
+# - Default to safe values when flag service unavailable
+# - Implement graceful degradation
+# - Have rollback procedures ready
+#
+# 4. COMPLIANCE:
+# - Consider data privacy implications
+# - Document user consent for A/B tests
+# - Ensure flag changes are auditable

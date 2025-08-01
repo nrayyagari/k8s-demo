@@ -1,0 +1,339 @@
+# Basic Blue-Green Deployment Example
+# Purpose: Learn how to perform instant traffic switching between versions
+
+# WHY: Need instant rollback capability and zero-risk deployments
+# PROBLEM: Rolling updates can't instantly rollback and mix versions
+# SOLUTION: Run two identical environments, switch traffic instantly
+
+---
+# BLUE ENVIRONMENT (Currently Active - Version 1)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-blue
+  labels:
+    app: webapp
+    version: blue
+    environment: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: webapp
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: webapp
+        version: blue
+        environment: production
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        
+        # Version identification
+        env:
+        - name: APP_VERSION
+          value: "v1.0.0"
+        - name: ENVIRONMENT_COLOR
+          value: "blue"
+        - name: DEPLOYMENT_TIME
+          value: "2025-07-15T10:00:00Z"
+        
+        # Health checks for traffic switching
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 2
+        
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# GREEN ENVIRONMENT (Staging - Version 2)  
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-green
+  labels:
+    app: webapp
+    version: green
+    environment: staging
+spec:
+  replicas: 3                    # Same as blue for identical capacity
+  selector:
+    matchLabels:
+      app: webapp
+      version: green
+  template:
+    metadata:
+      labels:
+        app: webapp
+        version: green
+        environment: staging
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine # Updated version would go here
+        ports:
+        - containerPort: 80
+        
+        # Updated version identification
+        env:
+        - name: APP_VERSION
+          value: "v2.0.0"        # New version
+        - name: ENVIRONMENT_COLOR
+          value: "green"
+        - name: DEPLOYMENT_TIME
+          value: "2025-08-01T12:00:00Z"  # New deployment time
+        
+        # Identical health checks
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 2
+        
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        
+        # Identical resource allocation
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# PRODUCTION SERVICE (Currently pointing to BLUE)
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+  labels:
+    app: webapp
+    role: production
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp
+    version: blue              # TRAFFIC CONTROL: Points to blue environment
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+
+---
+# STAGING SERVICE (For testing GREEN before switch)
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-staging-service
+  labels:
+    app: webapp
+    role: staging
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp
+    version: green             # Always points to green for testing
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+
+---
+# INGRESS FOR PRODUCTION TRAFFIC
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webapp-production-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: myapp.production.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: webapp-service    # Points to active environment
+            port:
+              number: 80
+
+---
+# INGRESS FOR STAGING TESTING
+apiVersion: networking.k8s.io/v1  
+kind: Ingress
+metadata:
+  name: webapp-staging-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: myapp.staging.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: webapp-staging-service  # Always points to green
+            port:
+              number: 80
+
+# BLUE-GREEN DEPLOYMENT PROCESS:
+#
+# PHASE 1: INITIAL STATE (Blue Active)
+# ┌─────────────────┐    ┌─────────────────┐
+# │  BLUE (v1.0)    │    │  GREEN (empty)  │
+# │  ┌───┐ ┌───┐    │    │                 │
+# │  │Pod│ │Pod│    │    │                 │
+# │  └───┘ └───┘    │    │                 │
+# │     ACTIVE      │    │    INACTIVE     │
+# └─────────────────┘    └─────────────────┘
+#          ▲                       
+#      Production                  
+#       Traffic                    
+#
+# PHASE 2: DEPLOY NEW VERSION TO GREEN
+# ┌─────────────────┐    ┌─────────────────┐
+# │  BLUE (v1.0)    │    │  GREEN (v2.0)   │
+# │  ┌───┐ ┌───┐    │    │  ┌───┐ ┌───┐    │
+# │  │Pod│ │Pod│    │    │  │Pod│ │Pod│    │
+# │  └───┘ └───┘    │    │  └───┘ └───┘    │
+# │     ACTIVE      │    │   TESTING       │
+# └─────────────────┘    └─────────────────┘
+#          ▲                       ▲
+#      Production              Staging
+#       Traffic                Traffic
+#
+# PHASE 3: SWITCH TRAFFIC TO GREEN
+# ┌─────────────────┐    ┌─────────────────┐
+# │  BLUE (v1.0)    │    │  GREEN (v2.0)   │
+# │  ┌───┐ ┌───┐    │    │  ┌───┐ ┌───┐    │
+# │  │Pod│ │Pod│    │    │  │Pod│ │Pod│    │
+# │  └───┘ └───┘    │    │  └───┘ └───┘    │
+# │    STANDBY      │    │     ACTIVE      │
+# └─────────────────┘    └─────────────────┘
+#                                   ▲
+#                               Production
+#                                Traffic
+
+# TRAFFIC SWITCHING COMMANDS:
+#
+# 1. Deploy new version to GREEN environment:
+# kubectl apply -f 01-basic-blue-green.yaml
+#
+# 2. Test GREEN environment through staging service:
+# kubectl port-forward service/webapp-staging-service 8080:80
+# curl http://localhost:8080  # Test new version
+#
+# 3. Verify GREEN pods are ready:
+# kubectl get pods -l version=green
+# kubectl describe pods -l version=green
+#
+# 4. CRITICAL: Switch production traffic to GREEN:
+# kubectl patch service webapp-service -p '{"spec":{"selector":{"version":"green"}}}'
+#
+# 5. Verify traffic switch (should see v2.0.0):
+# kubectl get service webapp-service -o yaml | grep -A 5 selector
+# curl http://myapp.production.local
+#
+# 6. Monitor for issues (if problems, instant rollback):
+# kubectl get pods -l version=green --watch
+# 
+# 7. ROLLBACK if needed (instant traffic switch back to BLUE):
+# kubectl patch service webapp-service -p '{"spec":{"selector":{"version":"blue"}}}'
+
+# TESTING BOTH ENVIRONMENTS:
+#
+# Test BLUE (current production):
+# kubectl port-forward service/webapp-service 8081:80
+# curl http://localhost:8081  # Should show v1.0.0
+#
+# Test GREEN (new version):  
+# kubectl port-forward service/webapp-staging-service 8082:80
+# curl http://localhost:8082  # Should show v2.0.0
+#
+# Load test both environments:
+# kubectl run load-test-blue --image=busybox --restart=Never -- \
+#   /bin/sh -c "while true; do wget -q -O- http://webapp-service; sleep 0.1; done"
+#
+# kubectl run load-test-green --image=busybox --restart=Never -- \
+#   /bin/sh -c "while true; do wget -q -O- http://webapp-staging-service; sleep 0.1; done"
+
+# CLEANUP AFTER SUCCESSFUL DEPLOYMENT:
+#
+# 1. After confirming GREEN is stable (24-48 hours):
+# kubectl delete deployment webapp-blue
+#
+# 2. Prepare BLUE for next deployment:
+# kubectl create deployment webapp-blue --image=nginx:1.27-alpine --replicas=3
+# kubectl label deployment webapp-blue app=webapp version=blue
+#
+# 3. Update labels for next cycle:
+# kubectl label deployment webapp-green environment=production --overwrite
+# kubectl label deployment webapp-blue environment=staging --overwrite
+
+# BLUE-GREEN ADVANTAGES:
+# ✅ INSTANT ROLLBACK: Switch traffic back immediately if issues
+# ✅ ZERO DOWNTIME: No mixed versions, clean environment switch  
+# ✅ FULL TESTING: Test complete environment before going live
+# ✅ DISASTER RECOVERY: Always have previous version ready
+
+# BLUE-GREEN DISADVANTAGES:  
+# ❌ RESOURCE COST: Requires 2x infrastructure (double pods)
+# ❌ DATABASE COMPLEXITY: Schema changes need backward compatibility
+# ❌ STATE MANAGEMENT: Difficult with stateful applications
+# ❌ COORDINATION: More complex orchestration required
+
+# PRODUCTION CONSIDERATIONS:
+#
+# 1. DATABASE MIGRATIONS:
+# - Deploy backward-compatible schema changes first
+# - Run data migrations that work with both versions
+# - Clean up old schema after successful switch
+#
+# 2. EXTERNAL DEPENDENCIES:
+# - Ensure new version works with current external services
+# - Coordinate with upstream/downstream systems
+# - Plan for API version compatibility
+#
+# 3. MONITORING SETUP:
+# - Monitor both environments separately
+# - Set up alerts for traffic switching
+# - Track key business metrics during switch
+#
+# 4. ROLLBACK PROCEDURES:
+# - Document exact rollback commands  
+# - Practice rollback scenarios regularly
+# - Set up automated rollback triggers

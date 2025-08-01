@@ -1,0 +1,692 @@
+# Advanced Feature Flags with LaunchDarkly Integration
+# Purpose: Production-grade feature flag management with external service
+
+# WHY: Need sophisticated feature flag management with advanced targeting
+# PROBLEM: Basic ConfigMap flags lack advanced features like user targeting, analytics
+# SOLUTION: Integrate with LaunchDarkly for enterprise-grade feature flag management
+
+# NOTE: This example requires LaunchDarkly account and SDK key
+# Sign up: https://launchdarkly.com/
+# Get SDK key from LaunchDarkly dashboard
+
+---
+# APPLICATION WITH LAUNCHDARKLY INTEGRATION
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-launchdarkly
+  labels:
+    app: webapp-advanced
+    feature-flag-provider: launchdarkly
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: webapp-advanced
+  template:
+    metadata:
+      labels:
+        app: webapp-advanced
+      annotations:
+        # LaunchDarkly configuration
+        launchdarkly.com/sdk-key: "from-secret"
+        launchdarkly.com/environment: "production"
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine  # In production, use app with LaunchDarkly SDK
+        ports:
+        - containerPort: 8080
+        - containerPort: 9090
+          name: metrics
+        
+        # LaunchDarkly configuration
+        env:
+        # LaunchDarkly SDK Key (from secret)
+        - name: LAUNCHDARKLY_SDK_KEY
+          valueFrom:
+            secretKeyRef:
+              name: launchdarkly-config
+              key: sdk-key
+        
+        # LaunchDarkly environment
+        - name: LAUNCHDARKLY_ENVIRONMENT
+          value: "production"
+        
+        # Feature flag refresh settings
+        - name: LAUNCHDARKLY_STREAM_ENABLED
+          value: "true"
+        
+        - name: LAUNCHDARKLY_POLLING_INTERVAL
+          value: "30s"
+        
+        - name: LAUNCHDARKLY_EVENTS_FLUSH_INTERVAL
+          value: "5s"
+        
+        # Offline mode for fallback
+        - name: LAUNCHDARKLY_OFFLINE_MODE
+          value: "false"
+        
+        # Application configuration
+        - name: APP_VERSION
+          value: "v2.0.0"
+        
+        - name: ENVIRONMENT
+          value: "production"
+        
+        - name: SERVICE_NAME
+          value: "webapp-advanced"
+        
+        # Feature flag defaults (fallback values)
+        - name: DEFAULT_NEW_DASHBOARD
+          value: "false"
+        
+        - name: DEFAULT_PREMIUM_FEATURES
+          value: "false"
+        
+        # Health checks
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        
+        # Startup probe for LaunchDarkly initialization
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 12
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        
+        # Volume mounts for configuration
+        volumeMounts:
+        - name: launchdarkly-config
+          mountPath: /etc/launchdarkly
+          readOnly: true
+      
+      volumes:
+      - name: launchdarkly-config
+        secret:
+          secretName: launchdarkly-config
+
+---
+# LAUNCHDARKLY CREDENTIALS (Secret)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: launchdarkly-config
+  labels:
+    app: webapp-advanced
+type: Opaque
+data:
+  # Base64 encoded LaunchDarkly SDK key
+  sdk-key: c2RrLWtleS1leGFtcGxlLWtleS1mb3ItZGVtbw==  # sdk-key-example-key-for-demo
+  
+  # Base64 encoded mobile key (if needed)
+  mobile-key: bW9iLWtleS1leGFtcGxlLWtleQ==  # mob-key-example-key
+  
+  # Base64 encoded client-side ID (if needed)
+  client-side-id: Y2xpZW50LXNpZGUtaWQtZXhhbXBsZQ==  # client-side-id-example
+
+---
+# LAUNCHDARKLY RELAY PROXY (Optional - for high performance)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: launchdarkly-relay
+  labels:
+    app: launchdarkly-relay
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: launchdarkly-relay
+  template:
+    metadata:
+      labels:
+        app: launchdarkly-relay
+    spec:
+      containers:
+      - name: relay
+        image: launchdarkly/ld-relay:6.5.2
+        ports:
+        - containerPort: 8030
+          name: http
+        - containerPort: 8031
+          name: metrics
+        
+        env:
+        # LaunchDarkly configuration
+        - name: LD_ENV_production
+          valueFrom:
+            secretKeyRef:
+              name: launchdarkly-config
+              key: sdk-key
+        
+        # Relay configuration
+        - name: REDIS_HOST
+          value: "redis-service"
+        
+        - name: REDIS_PORT
+          value: "6379"
+        
+        - name: USE_REDIS
+          value: "true"
+        
+        - name: LOG_LEVEL
+          value: "info"
+        
+        - name: PORT
+          value: "8030"
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        # Health checks
+        readinessProbe:
+          httpGet:
+            path: /status
+            port: 8030
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        
+        livenessProbe:
+          httpGet:
+            path: /status
+            port: 8030
+          initialDelaySeconds: 30
+          periodSeconds: 10
+
+---
+# REDIS FOR RELAY PROXY CACHING
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        
+        # Redis configuration
+        volumeMounts:
+        - name: redis-config
+          mountPath: /usr/local/etc/redis/redis.conf
+          subPath: redis.conf
+      
+      volumes:
+      - name: redis-config
+        configMap:
+          name: redis-config
+
+---
+# REDIS CONFIGURATION
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+data:
+  redis.conf: |
+    # Redis configuration for LaunchDarkly Relay
+    maxmemory 64mb
+    maxmemory-policy allkeys-lru
+    save ""
+    appendonly no
+    tcp-keepalive 60
+
+---
+# SERVICES
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+  labels:
+    app: webapp-advanced
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp-advanced
+  ports:
+  - port: 80
+    targetPort: 8080
+    name: http
+  - port: 9090
+    targetPort: 9090
+    name: metrics
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: launchdarkly-relay-service
+  labels:
+    app: launchdarkly-relay
+spec:
+  type: ClusterIP
+  selector:
+    app: launchdarkly-relay
+  ports:
+  - port: 8030
+    targetPort: 8030
+    name: http
+  - port: 8031
+    targetPort: 8031
+    name: metrics
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  labels:
+    app: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# FEATURE FLAG MONITORING WITH PROMETHEUS
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: launchdarkly-monitoring
+spec:
+  selector:
+    matchLabels:
+      app: webapp-advanced
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+
+---
+# CONFIGMAP FOR FEATURE FLAG DOCUMENTATION
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feature-flag-documentation
+data:
+  features.yaml: |
+    # LAUNCHDARKLY FEATURE FLAGS DOCUMENTATION
+    # 
+    # This document describes all feature flags managed in LaunchDarkly
+    # for the webapp-advanced application.
+    
+    feature_flags:
+      
+      # DASHBOARD REDESIGN
+      new_dashboard:
+        flag_key: "new-dashboard"
+        description: "Enable new dashboard UI with improved UX"
+        type: "boolean"
+        default_value: false
+        targeting_rules:
+          - segment: "beta_users"
+            value: true
+          - percentage_rollout: 25
+            variation: true
+        prerequisites: []
+        tags: ["ui", "dashboard", "beta"]
+        
+      # PREMIUM FEATURES
+      premium_features:
+        flag_key: "premium-features" 
+        description: "Premium feature set for paid users"
+        type: "boolean"
+        default_value: false
+        targeting_rules:
+          - attribute: "user_tier"
+            operator: "in"
+            values: ["premium", "enterprise"]
+            value: true
+        prerequisites: []
+        tags: ["premium", "monetization"]
+        
+      # CHECKOUT OPTIMIZATION
+      new_checkout_flow:
+        flag_key: "new-checkout-flow"
+        description: "Streamlined checkout process"
+        type: "boolean"
+        default_value: false
+        targeting_rules:
+          - segment: "us_users"
+            percentage_rollout: 50
+            variation: true
+          - segment: "mobile_users"
+            percentage_rollout: 75
+            variation: true
+        prerequisites: []
+        tags: ["checkout", "conversion", "mobile"]
+        
+      # API VERSIONING
+      api_v2_enabled:
+        flag_key: "api-v2-enabled"
+        description: "Enable new API v2 endpoints"
+        type: "boolean"
+        default_value: false
+        targeting_rules:
+          - attribute: "api_key_type"
+            operator: "in"
+            values: ["beta", "partner"]
+            value: true
+        prerequisites: []
+        tags: ["api", "beta", "integration"]
+        
+      # MULTIVARIATE FLAGS
+      recommendation_algorithm:
+        flag_key: "recommendation-algorithm"
+        description: "Select recommendation algorithm"
+        type: "string"
+        default_value: "collaborative_filtering"
+        variations:
+          - "collaborative_filtering"
+          - "content_based"
+          - "hybrid_approach"
+        targeting_rules:
+          - segment: "power_users"
+            value: "hybrid_approach"
+          - percentage_rollout:
+              collaborative_filtering: 60
+              content_based: 20
+              hybrid_approach: 20
+        tags: ["ml", "recommendations", "algorithm"]
+        
+      # NUMERIC FLAGS
+      search_results_limit:
+        flag_key: "search-results-limit"
+        description: "Maximum search results per page"
+        type: "number"
+        default_value: 20
+        variations: [10, 20, 50, 100]
+        targeting_rules:
+          - attribute: "user_type"
+            operator: "equals"
+            value: "premium"
+            variation: 100
+          - attribute: "device_type"
+            operator: "equals"
+            value: "mobile"
+            variation: 10
+        tags: ["search", "performance", "ux"]
+        
+      # JSON FLAGS
+      ui_configuration:
+        flag_key: "ui-configuration"
+        description: "Dynamic UI configuration"
+        type: "json"
+        default_value: |
+          {
+            "theme": "light",
+            "sidebar_collapsed": false,
+            "notifications_enabled": true,
+            "animation_enabled": true
+          }
+        targeting_rules:
+          - attribute: "user_preferences.theme"
+            operator: "equals"
+            value: "dark"
+            variation: |
+              {
+                "theme": "dark",
+                "sidebar_collapsed": false,
+                "notifications_enabled": true,
+                "animation_enabled": true
+              }
+        tags: ["ui", "configuration", "personalization"]
+
+# LAUNCHDARKLY SDK IMPLEMENTATION EXAMPLES:
+#
+# Node.js SDK:
+# const LaunchDarkly = require('launchdarkly-node-server-sdk');
+# const client = LaunchDarkly.init(process.env.LAUNCHDARKLY_SDK_KEY);
+# 
+# // Boolean flag
+# const showNewDashboard = await client.variation('new-dashboard', user, false);
+# if (showNewDashboard) {
+#   return renderNewDashboard();
+# }
+# 
+# // Multivariate flag
+# const algorithm = await client.variation('recommendation-algorithm', user, 'collaborative_filtering');
+# return getRecommendations(user, algorithm);
+# 
+# // JSON flag
+# const uiConfig = await client.variation('ui-configuration', user, defaultConfig);
+# return renderUI(uiConfig);
+#
+# Python SDK:
+# import ldclient
+# from ldclient.config import Config
+# 
+# ldclient.set_config(Config(os.environ['LAUNCHDARKLY_SDK_KEY']))
+# 
+# user = {
+#   "key": "user123",
+#   "email": "user@example.com",
+#   "custom": {
+#     "user_tier": "premium",
+#     "device_type": "mobile"
+#   }
+# }
+# 
+# show_premium = ldclient.get().variation('premium-features', user, False)
+# if show_premium:
+#     return render_premium_features()
+
+# USER CONTEXT EXAMPLES:
+#
+# Basic user context:
+# {
+#   "key": "user-123",
+#   "name": "John Doe",
+#   "email": "john.doe@example.com"
+# }
+#
+# Advanced user context with custom attributes:
+# {
+#   "key": "user-123",
+#   "name": "John Doe", 
+#   "email": "john.doe@example.com",
+#   "custom": {
+#     "user_tier": "premium",
+#     "signup_date": "2024-01-15",
+#     "geographic_region": "US-West",
+#     "device_type": "mobile",
+#     "app_version": "2.1.0",
+#     "experiments": ["checkout_optimization", "new_dashboard"],
+#     "beta_user": true,
+#     "company_size": "enterprise"
+#   }
+# }
+
+# ADVANCED TARGETING EXAMPLES:
+#
+# Geographic targeting:
+# Target users in specific regions
+# Rule: custom.geographic_region is one of ["US-West", "US-East"]
+#
+# Percentage rollout by segment:
+# Rule: if user is in segment "mobile_users" then 75% get true
+#       if user is in segment "desktop_users" then 25% get true
+#
+# A/B test with prerequisites:
+# Rule: if "new_dashboard" is true AND user.custom.beta_user is true
+#       then show advanced features
+#
+# Time-based targeting:
+# Rule: if current_time is between 9 AM and 5 PM PST
+#       then enable business_hours_features
+#
+# Company-based targeting:
+# Rule: if user.custom.company_size equals "enterprise"
+#       then enable enterprise_features
+
+# LAUNCHDARKLY MANAGEMENT COMMANDS:
+#
+# 1. View flag status via LaunchDarkly CLI:
+# ldcli flags list --project my-project --environment production
+#
+# 2. Toggle flag via CLI:
+# ldcli flags toggle --project my-project --environment production --flag new-dashboard
+#
+# 3. Update targeting rules:
+# ldcli flags update-targeting --project my-project --environment production \
+#   --flag premium-features --rules rules.json
+#
+# 4. Create new flag:
+# ldcli flags create --project my-project --flag new-feature \
+#   --name "New Feature" --description "Description of new feature"
+
+# MONITORING AND ALERTING:
+#
+# LaunchDarkly metrics in Prometheus:
+# - launchdarkly_flag_evaluations_total{flag="new-dashboard",variation="true"}
+# - launchdarkly_flag_evaluations_duration_seconds{flag="premium-features"}
+# - launchdarkly_client_connection_status{status="connected"}
+#
+# Grafana dashboard queries:
+# sum(rate(launchdarkly_flag_evaluations_total[5m])) by (flag, variation)
+# histogram_quantile(0.95, launchdarkly_flag_evaluations_duration_seconds_bucket)
+#
+# Alerts:
+# - Alert when flag evaluation latency > 100ms
+# - Alert when LaunchDarkly client disconnected
+# - Alert when flag evaluation errors > 1%
+
+# INTEGRATION WITH CI/CD:
+#
+# GitLab CI example:
+# deploy_with_flags:
+#   script:
+#     - kubectl apply -f k8s/
+#     - ldcli flags update-targeting --project $PROJECT --environment $ENVIRONMENT --flag new-feature --enable
+#   environment:
+#     name: production
+#
+# Automated flag cleanup:
+# cleanup_old_flags:
+#   script:
+#     - ldcli flags list --filter "created:<30d" --format json | jq -r '.[].key' | \
+#       xargs -I {} ldcli flags delete --flag {}
+#   when: manual
+
+# DISASTER RECOVERY:
+#
+# Kill switch - disable all non-critical flags:
+# kubectl create job flag-emergency-disable --image=launchdarkly/ldcli -- \
+#   ldcli flags bulk-update --project $PROJECT --environment production \
+#   --filter "tags:non-critical" --disable
+#
+# Fallback to offline mode:
+# kubectl set env deployment/webapp-launchdarkly LAUNCHDARKLY_OFFLINE_MODE=true
+#
+# Use last known good configuration:
+# kubectl patch deployment webapp-launchdarkly -p='
+# spec:
+#   template:
+#     spec:
+#       containers:
+#       - name: webapp
+#         env:
+#         - name: LAUNCHDARKLY_USE_CACHE
+#           value: "true"'
+
+# COST OPTIMIZATION:
+#
+# Use LaunchDarkly Relay Proxy to reduce API calls:
+# - Deploy relay proxy in each region/cluster
+# - Configure applications to use relay instead of direct API
+# - Reduces latency and API call costs
+#
+# Implement client-side caching:
+# - Cache flag values for specified duration
+# - Reduce API calls for frequently evaluated flags
+# - Balance freshness vs performance
+#
+# Archive unused flags:
+# - Regular cleanup of old feature flags
+# - Archive completed experiments
+# - Reduce monthly active flag count
+
+# SECURITY BEST PRACTICES:
+#
+# 1. SDK Key Management:
+# - Use Kubernetes secrets for SDK keys
+# - Rotate keys regularly
+# - Separate keys per environment
+# - Use service accounts for authentication
+#
+# 2. Access Control:
+# - Implement RBAC in LaunchDarkly
+# - Limit flag modification permissions
+# - Audit all flag changes
+# - Use approval workflows for production flags
+#
+# 3. Data Privacy:
+# - Be careful with user data in custom attributes
+# - Implement data retention policies
+# - Consider GDPR/CCPA requirements
+# - Use hashed user identifiers when possible
+
+# PERFORMANCE OPTIMIZATION:
+#
+# 1. Use streaming updates instead of polling:
+# LAUNCHDARKLY_STREAM_ENABLED=true
+#
+# 2. Optimize user context size:
+# - Only include necessary custom attributes
+# - Use efficient data types
+# - Consider caching user contexts
+#
+# 3. Implement circuit breakers:
+# - Fallback to default values on service failure
+# - Set reasonable timeouts
+# - Monitor error rates and adjust accordingly

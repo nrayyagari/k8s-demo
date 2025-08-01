@@ -1,0 +1,394 @@
+# Basic Canary Deployment Example
+# Purpose: Learn how to gradually roll out new versions to reduce risk
+
+# WHY: Need to test new versions with real users while limiting exposure
+# PROBLEM: Rolling updates expose all users to new version simultaneously
+# SOLUTION: Route small percentage of traffic to new version, monitor, then gradually increase
+
+---
+# STABLE VERSION (Current Production - 90% traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-stable
+  labels:
+    app: webapp
+    version: stable
+    deployment-type: canary
+spec:
+  replicas: 9                    # 90% of total capacity (9 out of 10 pods)
+  selector:
+    matchLabels:
+      app: webapp
+      version: stable
+  template:
+    metadata:
+      labels:
+        app: webapp
+        version: stable
+        track: stable
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        
+        # Current stable version configuration
+        env:
+        - name: APP_VERSION
+          value: "v1.0.0"
+        - name: TRACK
+          value: "stable"
+        - name: DEPLOYMENT_TIME
+          value: "2025-07-15T10:00:00Z"
+        
+        # Health checks for traffic routing
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 2
+        
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# CANARY VERSION (New Version - 10% traffic)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-canary
+  labels:
+    app: webapp
+    version: canary
+    deployment-type: canary
+spec:
+  replicas: 1                    # 10% of total capacity (1 out of 10 pods)
+  selector:
+    matchLabels:
+      app: webapp
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: webapp
+        version: canary
+        track: canary
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine  # New version would be different image/tag
+        ports:
+        - containerPort: 80
+        
+        # New canary version configuration
+        env:
+        - name: APP_VERSION
+          value: "v2.0.0"         # New version
+        - name: TRACK
+          value: "canary"
+        - name: DEPLOYMENT_TIME
+          value: "2025-08-01T12:00:00Z"
+        - name: EXPERIMENTAL_FEATURE
+          value: "enabled"        # New feature flag
+        
+        # Identical health checks
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 2
+        
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        
+        # Identical resource allocation
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+# SERVICE (Routes traffic to both stable and canary)
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-service
+  labels:
+    app: webapp
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp                  # Selects both stable and canary pods
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+
+---
+# CANARY SERVICE (For direct canary testing)
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-canary-service
+  labels:
+    app: webapp
+    role: canary-testing
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp
+    version: canary              # Only canary pods
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+
+---
+# INGRESS FOR PRODUCTION TRAFFIC (Mixed routing)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webapp-production-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: myapp.production.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: webapp-service    # Routes to both stable + canary
+            port:
+              number: 80
+
+---
+# INGRESS FOR CANARY-ONLY TESTING
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webapp-canary-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/auth-basic: "Canary Testing"
+    nginx.ingress.kubernetes.io/auth-secret: canary-auth
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: canary.myapp.production.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: webapp-canary-service  # Canary-only traffic
+            port:
+              number: 80
+
+# CANARY DEPLOYMENT PROCESS:
+#
+# PHASE 1: INITIAL STATE (100% Stable)
+# ┌─────────────────────────────────────────────────────────────┐
+# │                    STABLE (v1.0)                           │
+# │  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐  │
+# │  │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│  │
+# │  └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘  │
+# └─────────────────────────────────────────────────────────────┘
+#                              ▲
+#                         100% Traffic
+#
+# PHASE 2: CANARY INTRODUCTION (90% Stable, 10% Canary)
+# ┌─────────────────────────────────────────────────────┐ ┌─────┐
+# │                STABLE (v1.0)                       │ │CANARY│
+# │  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐  │ │ ┌───┐│
+# │  │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│  │ │ │Pod││
+# │  └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘  │ │ └───┘│
+# └─────────────────────────────────────────────────────┘ └─────┘
+#                              ▲                            ▲
+#                         90% Traffic                  10% Traffic
+#
+# PHASE 3: CANARY EXPANSION (70% Stable, 30% Canary)
+# ┌─────────────────────────────────────────────┐ ┌─────────────┐
+# │            STABLE (v1.0)                   │ │   CANARY    │
+# │  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ │ │ ┌───┐ ┌───┐ │
+# │  │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │ │ │Pod│ │Pod│ │
+# │  └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ │ │ └───┘ └───┘ │
+# └─────────────────────────────────────────────┘ └─────────────┘
+#                              ▲                        ▲
+#                         70% Traffic              30% Traffic
+#
+# PHASE 4: COMPLETE ROLLOUT (100% Canary, now Stable)
+# ┌─────────────────────────────────────────────────────────────┐
+# │                   STABLE (v2.0)                            │
+# │  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐  │
+# │  │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│ │Pod│  │
+# │  └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘ └───┘  │
+# └─────────────────────────────────────────────────────────────┘
+#                              ▲
+#                         100% Traffic
+
+# CANARY PROGRESSION COMMANDS:
+#
+# 1. Deploy initial stable version:
+# kubectl apply -f 01-basic-canary.yaml
+#
+# 2. Verify traffic distribution (should see ~90% v1.0.0, ~10% v2.0.0):
+# for i in {1..20}; do curl -s http://myapp.production.local | grep APP_VERSION; sleep 1; done
+#
+# 3. Test canary version directly:
+# kubectl port-forward service/webapp-canary-service 8081:80
+# curl http://localhost:8081  # Should always show v2.0.0
+#
+# 4. Monitor canary performance:
+# kubectl get pods -l version=canary --watch
+# kubectl logs -l version=canary --tail=50
+#
+# 5. PROGRESSION: Increase canary traffic (30%):
+# kubectl scale deployment webapp-stable --replicas=7  # 70%
+# kubectl scale deployment webapp-canary --replicas=3  # 30%
+#
+# 6. PROGRESSION: Increase canary traffic (50%):
+# kubectl scale deployment webapp-stable --replicas=5  # 50%
+# kubectl scale deployment webapp-canary --replicas=5  # 50%
+#
+# 7. FINAL PROMOTION: Complete rollout to canary:
+# kubectl scale deployment webapp-stable --replicas=0   # 0%
+# kubectl scale deployment webapp-canary --replicas=10  # 100%
+#
+# 8. CLEANUP: Replace stable with canary version:
+# kubectl delete deployment webapp-stable
+# kubectl set image deployment/webapp-canary webapp=nginx:1.27-alpine
+# kubectl scale deployment webapp-canary --replicas=9
+# # Deploy new canary for next iteration
+
+# ROLLBACK COMMANDS (if canary shows issues):
+#
+# Immediate rollback (remove canary traffic):
+# kubectl scale deployment webapp-canary --replicas=0
+# kubectl scale deployment webapp-stable --replicas=10
+#
+# Verify rollback:
+# kubectl get pods -l app=webapp
+# for i in {1..10}; do curl -s http://myapp.production.local | grep APP_VERSION; done
+
+# MONITORING DURING CANARY:
+#
+# Watch traffic distribution:
+# watch 'kubectl get pods -l app=webapp -o wide'
+#
+# Monitor error rates by version:
+# kubectl logs -l version=stable --since=1m | grep -c ERROR
+# kubectl logs -l version=canary --since=1m | grep -c ERROR
+#
+# Check resource usage by version:
+# kubectl top pods -l version=stable
+# kubectl top pods -l version=canary
+#
+# Monitor service endpoints:
+# kubectl get endpoints webapp-service -o yaml
+
+# LOAD TESTING CANARY:
+#
+# Generate balanced load to see traffic split:
+# kubectl run load-test --image=busybox --restart=Never -- \
+#   /bin/sh -c "for i in \$(seq 1 100); do wget -q -O- http://webapp-service | grep APP_VERSION; sleep 0.5; done"
+#
+# Stress test canary specifically:
+# kubectl run canary-stress --image=busybox --restart=Never -- \
+#   /bin/sh -c "while true; do wget -q -O- http://webapp-canary-service; sleep 0.1; done"
+
+# CANARY DECISION CRITERIA:
+#
+# PROMOTE CANARY IF:
+# ✅ Error rate ≤ stable version error rate
+# ✅ Response time ≤ 1.2x stable version response time  
+# ✅ No increase in 5xx errors
+# ✅ Memory usage within expected bounds
+# ✅ No customer complaints or support tickets
+# ✅ Business metrics remain stable or improve
+#
+# ROLLBACK CANARY IF:
+# ❌ Error rate > 2x stable version error rate
+# ❌ Response time > 2x stable version response time
+# ❌ Any 5xx errors > 1% of requests
+# ❌ Memory leaks detected (increasing usage)
+# ❌ Customer complaints about functionality
+# ❌ Business metrics showing negative impact
+
+# GRADUAL ROLLOUT SCHEDULE:
+#
+# Week 1: Deploy canary at 5% traffic (1 pod canary, 19 pods stable)
+# - Monitor for 24-48 hours
+# - Check error rates, performance metrics
+# - Gather initial user feedback
+#
+# Week 1-2: Increase to 10% traffic (1 pod canary, 9 pods stable)  
+# - Monitor for 48-72 hours
+# - Deeper performance analysis
+# - Review business impact metrics
+#
+# Week 2-3: Increase to 25% traffic (2-3 pods canary, 7-8 pods stable)
+# - Monitor for 3-5 days
+# - Comprehensive testing of new features
+# - A/B test analysis if applicable
+#
+# Week 3-4: Increase to 50% traffic (5 pods canary, 5 pods stable)
+# - Monitor for 1 week
+# - Full performance validation
+# - Business stakeholder review
+#
+# Week 4+: Complete rollout to 100% (10 pods canary, 0 pods stable)
+# - Monitor for 1-2 weeks as new stable
+# - Prepare next canary for future releases
+
+# PRODUCTION BEST PRACTICES:
+#
+# 1. IDENTICAL INFRASTRUCTURE:
+# - Same resource requests/limits
+# - Same health check configuration  
+# - Same environment variables (except version tracking)
+# - Same storage and network configuration
+#
+# 2. GRADUAL TRAFFIC INCREASE:
+# - Start with small percentage (5-10%)
+# - Increase gradually based on confidence
+# - Never jump directly to 50%+ without validation
+#
+# 3. COMPREHENSIVE MONITORING:
+# - Error rates by version
+# - Response times by version
+# - Resource utilization by version
+# - Business metrics impact
+#
+# 4. AUTOMATED ROLLBACK:
+# - Set up alerts for key metrics
+# - Prepare automated rollback scripts
+# - Have manual rollback procedures documented
+# - Practice rollback scenarios regularly

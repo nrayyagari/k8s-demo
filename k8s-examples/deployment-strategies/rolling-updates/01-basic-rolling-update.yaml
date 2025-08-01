@@ -1,0 +1,202 @@
+# Basic Rolling Update Example
+# Purpose: Learn how Kubernetes performs zero-downtime deployments
+
+# WHY: Need to update applications without service interruption
+# PROBLEM: Traditional deployments require downtime
+# SOLUTION: Rolling updates replace pods gradually while maintaining availability
+
+---
+# Step 1: Initial application deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-rolling
+  labels:
+    app: webapp-rolling
+    version: v1
+spec:
+  replicas: 6                    # Multiple replicas for smooth rollout
+  selector:
+    matchLabels:
+      app: webapp-rolling
+  
+  # ROLLING UPDATE STRATEGY CONFIGURATION
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 2          # Max pods that can be unavailable (33%)
+      maxSurge: 2                # Max extra pods during update (33%)
+  
+  template:
+    metadata:
+      labels:
+        app: webapp-rolling
+        version: v1              # Track version for updates
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 80
+        
+        # Resource allocation for consistent performance
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        
+        # Health checks critical for rolling updates
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 2
+        
+        # Environment variable to demonstrate version updates
+        env:
+        - name: APP_VERSION
+          value: "v1.0.0"
+        - name: DEPLOYMENT_TIME
+          value: "2025-08-01T00:00:00Z"
+
+---
+# Step 2: Service to expose the application
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-rolling-service
+spec:
+  type: ClusterIP
+  selector:
+    app: webapp-rolling           # Selects all versions during rollout
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+
+# HOW ROLLING UPDATES WORK:
+#
+# INITIAL STATE: 6 pods running v1
+# ├── webapp-rolling-abc123 (v1) ✓
+# ├── webapp-rolling-def456 (v1) ✓  
+# ├── webapp-rolling-ghi789 (v1) ✓
+# ├── webapp-rolling-jkl012 (v1) ✓
+# ├── webapp-rolling-mno345 (v1) ✓
+# └── webapp-rolling-pqr678 (v1) ✓
+#
+# ROLLOUT PROCESS (maxSurge=2, maxUnavailable=2):
+#
+# Phase 1: Create 2 new pods (maxSurge)
+# ├── webapp-rolling-abc123 (v1) ✓
+# ├── webapp-rolling-def456 (v1) ✓
+# ├── webapp-rolling-ghi789 (v1) ✓
+# ├── webapp-rolling-jkl012 (v1) ✓
+# ├── webapp-rolling-mno345 (v1) ✓
+# ├── webapp-rolling-pqr678 (v1) ✓
+# ├── webapp-rolling-new001 (v2) ⏳ (starting)
+# └── webapp-rolling-new002 (v2) ⏳ (starting)
+#
+# Phase 2: Wait for new pods ready, then terminate 2 old pods
+# ├── webapp-rolling-abc123 (v1) ❌ (terminating)
+# ├── webapp-rolling-def456 (v1) ❌ (terminating)
+# ├── webapp-rolling-ghi789 (v1) ✓
+# ├── webapp-rolling-jkl012 (v1) ✓
+# ├── webapp-rolling-mno345 (v1) ✓
+# ├── webapp-rolling-pqr678 (v1) ✓
+# ├── webapp-rolling-new001 (v2) ✓
+# └── webapp-rolling-new002 (v2) ✓
+#
+# Phase 3: Create 2 more new pods
+# ├── webapp-rolling-ghi789 (v1) ✓
+# ├── webapp-rolling-jkl012 (v1) ✓
+# ├── webapp-rolling-mno345 (v1) ✓
+# ├── webapp-rolling-pqr678 (v1) ✓
+# ├── webapp-rolling-new001 (v2) ✓
+# ├── webapp-rolling-new002 (v2) ✓
+# ├── webapp-rolling-new003 (v2) ⏳ (starting)
+# └── webapp-rolling-new004 (v2) ⏳ (starting)
+#
+# FINAL STATE: All 6 pods running v2
+# ├── webapp-rolling-new001 (v2) ✓
+# ├── webapp-rolling-new002 (v2) ✓
+# ├── webapp-rolling-new003 (v2) ✓
+# ├── webapp-rolling-new004 (v2) ✓
+# ├── webapp-rolling-new005 (v2) ✓
+# └── webapp-rolling-new006 (v2) ✓
+
+# TESTING COMMANDS:
+#
+# 1. Deploy initial version:
+# kubectl apply -f 01-basic-rolling-update.yaml
+#
+# 2. Check deployment status:
+# kubectl get deployment webapp-rolling
+# kubectl get pods -l app=webapp-rolling
+#
+# 3. Monitor service during update:
+# kubectl get endpoints webapp-rolling-service --watch
+#
+# 4. Trigger rolling update by changing image:
+# kubectl set image deployment/webapp-rolling webapp=nginx:1.27-alpine --record
+#
+# 5. Watch the rollout in real-time:
+# kubectl rollout status deployment/webapp-rolling
+# kubectl get pods -l app=webapp-rolling --watch
+#
+# 6. Check rollout history:
+# kubectl rollout history deployment/webapp-rolling
+#
+# 7. Generate load during update to test availability:
+# kubectl run load-test --image=busybox --restart=Never -- \
+#   /bin/sh -c "while true; do wget -q -O- http://webapp-rolling-service; sleep 0.1; done"
+
+# CONFIGURATION OPTIONS:
+#
+# maxUnavailable: Maximum pods that can be unavailable during update
+# - Absolute number: maxUnavailable: 2
+# - Percentage: maxUnavailable: 25%
+# - Higher = faster rollout, lower availability
+#
+# maxSurge: Maximum extra pods during update  
+# - Absolute number: maxSurge: 2
+# - Percentage: maxSurge: 25%
+# - Higher = faster rollout, more resources needed
+#
+# COMMON CONFIGURATIONS:
+# - Conservative: maxUnavailable: 1, maxSurge: 1 (slow, safe)
+# - Balanced: maxUnavailable: 25%, maxSurge: 25% (moderate)
+# - Aggressive: maxUnavailable: 50%, maxSurge: 50% (fast, risky)
+
+# PRODUCTION BEST PRACTICES:
+#
+# 1. HEALTH CHECKS ARE CRITICAL
+# - Readiness probe prevents traffic to unready pods
+# - Liveness probe restarts failed pods
+# - Set appropriate timeouts and thresholds
+#
+# 2. RESOURCE ALLOCATION
+# - Set requests/limits for predictable performance
+# - Account for maxSurge in cluster capacity planning
+#
+# 3. ROLLOUT PARAMETERS
+# - Start conservative (maxUnavailable: 1)
+# - Tune based on application startup time
+# - Consider cluster capacity for maxSurge
+#
+# 4. MONITORING
+# - Watch rollout status and pod health
+# - Monitor application metrics during updates
+# - Set up alerts for failed rollouts

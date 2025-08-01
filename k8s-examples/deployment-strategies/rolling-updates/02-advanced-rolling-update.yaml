@@ -1,0 +1,346 @@
+# Advanced Rolling Update Example
+# Purpose: Production-grade rolling updates with advanced controls
+
+# WHY: Need fine-grained control over rollout behavior
+# PROBLEM: Basic rolling updates may not fit all application requirements
+# SOLUTION: Advanced configuration for complex deployment scenarios
+
+---
+# Production application with advanced rolling update configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  labels:
+    app: api-server
+    tier: backend
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+    app.kubernetes.io/managed-by: "kubectl"
+    rollout.company.com/strategy: "advanced-rolling"
+spec:
+  replicas: 12                   # Higher replica count for production
+  
+  selector:
+    matchLabels:
+      app: api-server
+      tier: backend
+  
+  # ADVANCED ROLLING UPDATE STRATEGY
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 20%        # Allow 20% unavailable (2-3 pods)
+      maxSurge: 30%              # Allow 30% surge (3-4 extra pods)
+  
+  # ROLLOUT SPEED CONTROL
+  revisionHistoryLimit: 10       # Keep 10 previous versions for rollback
+  progressDeadlineSeconds: 600   # Fail rollout if not progressing after 10 min
+  
+  template:
+    metadata:
+      labels:
+        app: api-server
+        tier: backend
+        version: v2              # Track version changes
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        rollout.company.com/timestamp: "2025-08-01T00:00:00Z"
+    spec:
+      # GRACEFUL SHUTDOWN CONFIGURATION
+      terminationGracePeriodSeconds: 60  # Allow 60s for graceful shutdown
+      
+      # SECURITY CONTEXT
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      
+      containers:
+      - name: api-server
+        image: nginx:1.27-alpine  # Will be updated during rollout
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
+        
+        # COMPREHENSIVE RESOURCE ALLOCATION
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+            ephemeral-storage: "1Gi"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+            ephemeral-storage: "2Gi"
+        
+        # ADVANCED HEALTH CHECKS
+        startupProbe:              # For slow-starting applications
+          httpGet:
+            path: /health/startup
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30     # Allow 150s for startup (30 * 5s)
+          successThreshold: 1
+        
+        livenessProbe:             # Detect deadlocks/hangs
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        
+        readinessProbe:            # Control traffic routing
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 2
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # APPLICATION CONFIGURATION
+        env:
+        - name: APP_VERSION
+          value: "v2.0.0"
+        - name: ENVIRONMENT
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: GRACEFUL_SHUTDOWN_TIMEOUT
+          value: "50s"           # Less than terminationGracePeriod
+        
+        # CONFIGURATION FROM CONFIGMAP
+        envFrom:
+        - configMapRef:
+            name: api-server-config
+        - secretRef:
+            name: api-server-secrets
+        
+        # VOLUME MOUNTS
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+          readOnly: true
+        - name: cache-volume
+          mountPath: /tmp/cache
+      
+      # VOLUMES
+      volumes:
+      - name: config-volume
+        configMap:
+          name: api-server-config
+          defaultMode: 0644
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 1Gi
+      
+      # ADVANCED SCHEDULING
+      affinity:
+        podAntiAffinity:         # Spread pods across nodes
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - api-server
+              topologyKey: kubernetes.io/hostname
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-server-config
+data:
+  app.properties: |
+    server.port=8080
+    management.port=9090
+    spring.application.name=api-server
+    logging.level.com.company=INFO
+    
+    # Connection pool settings
+    database.max-connections=20
+    database.connection-timeout=30s
+    
+    # Circuit breaker settings
+    circuit-breaker.failure-threshold=50%
+    circuit-breaker.timeout=10s
+
+---
+# Secret for sensitive configuration
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-server-secrets
+type: Opaque
+data:
+  # Base64 encoded values
+  database-password: cGFzc3dvcmQxMjM=  # password123
+  api-key: YWJjZGVmZ2hpams=              # abcdefghijk
+
+---
+# Service for the API server
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server-service
+  labels:
+    app: api-server
+spec:
+  type: ClusterIP
+  selector:
+    app: api-server
+    tier: backend
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+
+---
+# Pod Disruption Budget to ensure availability during updates
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-server-pdb
+spec:
+  minAvailable: 8              # Ensure at least 8 pods available (67%)
+  selector:
+    matchLabels:
+      app: api-server
+      tier: backend
+
+# ADVANCED ROLLOUT SCENARIOS:
+#
+# SCENARIO 1: Database Schema Migration
+# 1. Deploy new version with backward compatibility
+# 2. Run data migration job
+# 3. Deploy version that uses new schema
+# 4. Clean up old schema after rollout complete
+#
+# SCENARIO 2: Breaking API Changes
+# 1. Deploy new version alongside old (blue-green)
+# 2. Route traffic gradually to new version
+# 3. Monitor error rates and performance
+# 4. Complete cutover when confident
+#
+# SCENARIO 3: Configuration Updates
+# 1. Update ConfigMap/Secret
+# 2. Restart deployment to pick up changes
+# 3. Monitor application behavior
+# 4. Rollback configuration if issues
+
+# ROLLOUT MONITORING COMMANDS:
+#
+# 1. Start advanced monitoring during rollout:
+# kubectl get deployment api-server --watch
+# kubectl get pods -l app=api-server -o wide --watch
+# kubectl get events --sort-by='.lastTimestamp' --field-selector involvedObject.name=api-server
+#
+# 2. Check rollout progress with details:
+# kubectl rollout status deployment/api-server --timeout=600s
+# kubectl describe deployment api-server
+#
+# 3. Monitor Pod Disruption Budget:
+# kubectl get pdb api-server-pdb
+# kubectl describe pdb api-server-pdb
+#
+# 4. View rollout history:
+# kubectl rollout history deployment/api-server
+# kubectl rollout history deployment/api-server --revision=2
+
+# TROUBLESHOOTING COMMANDS:
+#
+# 1. Pause rollout if issues detected:
+# kubectl rollout pause deployment/api-server
+#
+# 2. Resume paused rollout:
+# kubectl rollout resume deployment/api-server
+#
+# 3. Rollback to previous version:
+# kubectl rollout undo deployment/api-server
+#
+# 4. Rollback to specific revision:
+# kubectl rollout undo deployment/api-server --to-revision=1
+#
+# 5. Check pod logs during rollout:
+# kubectl logs -l app=api-server --tail=100 -f
+
+# PRODUCTION ROLLOUT CHECKLIST:
+#
+# PRE-ROLLOUT:
+# ☐ Verify health check endpoints work
+# ☐ Test new version in staging environment
+# ☐ Review resource requirements and cluster capacity
+# ☐ Prepare rollback plan
+# ☐ Notify stakeholders of deployment window
+#
+# DURING ROLLOUT:
+# ☐ Monitor rollout progress
+# ☐ Watch application metrics and logs
+# ☐ Monitor error rates and response times
+# ☐ Verify new pods pass health checks
+# ☐ Check Pod Disruption Budget compliance
+#
+# POST-ROLLOUT:
+# ☐ Verify all pods running new version
+# ☐ Run smoke tests on new deployment
+# ☐ Monitor application for 30+ minutes
+# ☐ Clean up old ReplicaSets if rollout successful
+# ☐ Update documentation with new version
+
+# ROLLOUT FAILURE HANDLING:
+#
+# AUTOMATIC FAILURES:
+# - Pod startup failures (startupProbe)
+# - Health check failures (readinessProbe, livenessProbe)
+# - Resource constraints (insufficient CPU/memory)
+# - Image pull failures
+#
+# MANUAL INTERVENTION REQUIRED:
+# - Application errors not caught by health checks
+# - Performance degradation
+# - Database connectivity issues
+# - External service dependencies
+#
+# ROLLBACK TRIGGERS:
+# - Error rate > 5% for more than 2 minutes
+# - Response time > 2x baseline for more than 5 minutes
+# - Memory usage > 90% for more than 5 minutes
+# - Failed health checks > 10% of pods
+
+# ADVANCED ROLLOUT TECHNIQUES:
+#
+# 1. GRADUATED ROLLOUT:
+# - Update 1 pod first, monitor for 10 minutes
+# - Update 25% of pods, monitor for 5 minutes  
+# - Update remaining pods if no issues
+#
+# 2. TIME-BASED ROLLOUT:
+# - Pause rollout during business hours
+# - Resume during maintenance windows
+# - Use external automation tools
+#
+# 3. METRIC-BASED ROLLOUT:
+# - Integrate with monitoring systems
+# - Automatic rollback on metric thresholds
+# - Use tools like Flagger or Argo Rollouts

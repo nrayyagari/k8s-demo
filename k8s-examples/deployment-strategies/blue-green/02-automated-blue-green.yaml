@@ -1,0 +1,394 @@
+# Automated Blue-Green Deployment with Argo Rollouts
+# Purpose: Production-grade blue-green deployments with automated controls
+
+# WHY: Manual traffic switching is error-prone and doesn't scale
+# PROBLEM: Need automated traffic management and rollback capabilities  
+# SOLUTION: Use Argo Rollouts for sophisticated blue-green automation
+
+# NOTE: This example requires Argo Rollouts controller
+# Install: kubectl create namespace argo-rollouts
+#         kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+
+---
+# AUTOMATED BLUE-GREEN ROLLOUT CONFIGURATION
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: webapp-automated
+  labels:
+    app: webapp-automated
+spec:
+  replicas: 6
+  
+  # TRAFFIC ROUTING STRATEGY
+  strategy:
+    blueGreen:
+      # AUTOMATED PROMOTION SETTINGS
+      autoPromotionEnabled: false      # Manual approval required
+      scaleDownDelaySeconds: 30        # Wait 30s before scaling down old version
+      prePromotionAnalysis:            # Run tests before promotion
+        templates:
+        - templateName: success-rate-analysis
+        args:
+        - name: service-name
+          value: webapp-automated-active
+      
+      # SERVICE CONFIGURATION
+      activeService: webapp-automated-active      # Production traffic
+      previewService: webapp-automated-preview    # Testing traffic
+      
+      # HEALTH CHECKS BEFORE PROMOTION
+      activeMetadata:
+        labels:
+          role: active
+          environment: production
+      previewMetadata:
+        labels:
+          role: preview
+          environment: staging
+  
+  # POD TEMPLATE
+  selector:
+    matchLabels:
+      app: webapp-automated
+  
+  template:
+    metadata:
+      labels:
+        app: webapp-automated
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 8080
+          name: http
+        
+        # APPLICATION CONFIGURATION
+        env:
+        - name: APP_VERSION
+          value: "v2.0.0"
+        - name: ENVIRONMENT
+          value: "production"
+        - name: DEPLOYMENT_STRATEGY
+          value: "blue-green-automated"
+        
+        # COMPREHENSIVE HEALTH CHECKS
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # RESOURCE ALLOCATION
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+---
+# ACTIVE SERVICE (Production Traffic)
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-automated-active
+  labels:
+    app: webapp-automated
+    role: active
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    name: http
+  # Selector will be managed automatically by Argo Rollouts
+
+---
+# PREVIEW SERVICE (Testing Traffic)
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-automated-preview
+  labels:
+    app: webapp-automated
+    role: preview
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    name: http
+  # Selector will be managed automatically by Argo Rollouts
+
+---
+# ANALYSIS TEMPLATE FOR AUTOMATED PROMOTION
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate-analysis
+spec:
+  args:
+  - name: service-name
+  metrics:
+  - name: success-rate
+    interval: 1m
+    count: 5
+    successCondition: result[0] >= 0.95    # 95% success rate required
+    failureLimit: 2
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          sum(rate(http_requests_total{service="{{ args.service-name }}",code!~"5.*"}[2m])) /
+          sum(rate(http_requests_total{service="{{ args.service-name }}"}[2m]))
+  
+  - name: latency-p99
+    interval: 1m  
+    count: 5
+    successCondition: result[0] <= 500     # p99 latency under 500ms
+    failureLimit: 2
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{service="{{ args.service-name }}"}[2m])) by (le)
+          ) * 1000
+
+---
+# INGRESS FOR PRODUCTION TRAFFIC
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webapp-automated-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - myapp.company.com
+    secretName: webapp-tls
+  rules:
+  - host: myapp.company.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: webapp-automated-active  # Production traffic
+            port:
+              number: 80
+
+---
+# INGRESS FOR PREVIEW TESTING
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webapp-automated-preview-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/auth-basic: "Authentication Required"
+    nginx.ingress.kubernetes.io/auth-secret: basic-auth
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: preview.myapp.company.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: webapp-automated-preview  # Preview traffic
+            port:
+              number: 80
+
+---
+# CONFIGMAP FOR PROMETHEUS MONITORING
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-monitoring-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+    - job_name: 'webapp-automated'
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: webapp-automated
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+
+# AUTOMATED DEPLOYMENT WORKFLOW:
+#
+# PHASE 1: INITIAL DEPLOYMENT
+# kubectl apply -f 02-automated-blue-green.yaml
+# 
+# Result: Creates initial rollout with all pods in "active" state
+# ┌─────────────────┐    ┌─────────────────┐
+# │  ACTIVE (v1)    │    │  PREVIEW        │
+# │  ┌───┐ ┌───┐    │    │    (empty)      │
+# │  │Pod│ │Pod│    │    │                 │
+# │  └───┘ └───┘    │    │                 │
+# └─────────────────┘    └─────────────────┘
+#          ▲
+#    Production Traffic
+#
+# PHASE 2: NEW VERSION DEPLOYMENT  
+# kubectl argo rollouts set image webapp-automated webapp=nginx:1.27-alpine
+#
+# Result: New version deployed to preview, analysis starts
+# ┌─────────────────┐    ┌─────────────────┐
+# │  ACTIVE (v1)    │    │  PREVIEW (v2)   │
+# │  ┌───┐ ┌───┐    │    │  ┌───┐ ┌───┐    │
+# │  │Pod│ │Pod│    │    │  │Pod│ │Pod│    │
+# │  └───┘ └───┘    │    │  └───┘ └───┘    │
+# └─────────────────┘    └─────────────────┘
+#          ▲                       ▲
+#    Production Traffic       Analysis &
+#                             Testing
+#
+# PHASE 3: AUTOMATED ANALYSIS
+# - Success rate monitoring (95% threshold)
+# - Latency monitoring (500ms p99 threshold)  
+# - 5 measurements over 5 minutes
+# - Auto-rollback if thresholds not met
+#
+# PHASE 4: MANUAL PROMOTION (if analysis passes)
+# kubectl argo rollouts promote webapp-automated
+#
+# Result: Traffic switched to new version
+# ┌─────────────────┐    ┌─────────────────┐
+# │  ACTIVE (v2)    │    │  PREVIEW        │
+# │  ┌───┐ ┌───┐    │    │    (scaling     │
+# │  │Pod│ │Pod│    │    │     down)       │
+# │  └───┘ └───┘    │    │                 │
+# └─────────────────┘    └─────────────────┘
+#          ▲
+#    Production Traffic
+
+# ARGO ROLLOUTS COMMANDS:
+#
+# Check rollout status:
+# kubectl argo rollouts get rollout webapp-automated
+# kubectl argo rollouts status webapp-automated
+#
+# Start new deployment:
+# kubectl argo rollouts set image webapp-automated webapp=myapp:v2.1.0
+#
+# Monitor rollout progress:
+# kubectl argo rollouts get rollout webapp-automated --watch
+#
+# Manually promote after analysis:
+# kubectl argo rollouts promote webapp-automated
+#
+# Abort rollout if issues detected:
+# kubectl argo rollouts abort webapp-automated
+#
+# Manual rollback to previous version:
+# kubectl argo rollouts undo webapp-automated
+
+# ANALYSIS AND MONITORING:
+#
+# View analysis results:
+# kubectl get analysisrun -l rollout=webapp-automated
+# kubectl describe analysisrun <analysis-run-name>
+#
+# Check Prometheus metrics:
+# kubectl port-forward svc/prometheus 9090:9090 -n monitoring
+# # Browse to http://localhost:9090
+#
+# Monitor both services:
+# kubectl get endpoints webapp-automated-active
+# kubectl get endpoints webapp-automated-preview
+
+# ADVANCED FEATURES:
+#
+# 1. PROGRESSIVE DELIVERY:
+# spec:
+#   strategy:
+#     blueGreen:
+#       prePromotionAnalysis:
+#         templates:
+#         - templateName: success-rate-analysis
+#         - templateName: latency-analysis
+#         - templateName: error-rate-analysis
+#
+# 2. AUTOMATED ROLLBACK:
+# spec:
+#   strategy:
+#     blueGreen:
+#       autoPromotionEnabled: true     # Auto-promote if analysis passes
+#       abortScaleDownDelaySeconds: 600 # Keep old version for 10 min
+#
+# 3. NOTIFICATION INTEGRATION:
+# metadata:
+#   annotations:
+#     notifications.argoproj.io/subscribe.on-rollout-completed.slack: webapp-team
+#     notifications.argoproj.io/subscribe.on-rollout-aborted.slack: webapp-team
+
+# PRODUCTION CHECKLIST:
+#
+# PRE-DEPLOYMENT:
+# ☐ Argo Rollouts controller installed and configured
+# ☐ Prometheus metrics collection working
+# ☐ Analysis templates tested and validated
+# ☐ Preview environment accessible for testing
+# ☐ Rollback procedures documented and tested
+#
+# DURING DEPLOYMENT:
+# ☐ Monitor analysis metrics in real-time
+# ☐ Test preview environment thoroughly
+# ☐ Verify application logs for errors
+# ☐ Check resource utilization
+# ☐ Coordinate with dependent teams
+#
+# POST-DEPLOYMENT:
+# ☐ Verify production traffic on new version
+# ☐ Monitor business metrics for impact
+# ☐ Scale down old version after confidence period
+# ☐ Update documentation and runbooks
+# ☐ Post-mortem if any issues occurred
+
+# TROUBLESHOOTING:
+#
+# Analysis stuck or failing:
+# kubectl get analysisrun -o yaml
+# kubectl logs -l app=webapp-automated
+#
+# Rollout not progressing:
+# kubectl describe rollout webapp-automated
+# kubectl get events --sort-by='.lastTimestamp'
+#
+# Services not updating:
+# kubectl get endpoints webapp-automated-active -o yaml
+# kubectl describe service webapp-automated-active
