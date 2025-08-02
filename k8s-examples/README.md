@@ -11,26 +11,54 @@ Start with WHY, then HOW, then practice.
 
 ```
 k8s-examples/
-├── deployments/     # Deployment examples
-├── services/        # Service examples (ClusterIP, NodePort, LoadBalancer)
-├── statefulsets/    # StatefulSet examples
-├── daemonsets/      # DaemonSet examples
-├── pdbs/           # Pod Disruption Budget examples
-├── ingress/        # Ingress controller and routing examples
-├── health-checks/  # Liveness, readiness, and startup probes
-├── configmaps-secrets/ # Configuration and secrets management
-├── autoscaling/    # Horizontal and Vertical Pod Autoscaler examples
-├── storage/        # Persistent storage with PV, PVC, and StorageClass examples
-├── rbac/           # Roles, ClusterRoles, and RBAC examples
-├── scheduling/     # Pod scheduling, taints/tolerations, affinity/anti-affinity
-├── resource-quotas/ # Resource quotas and limits for resource management
-├── troubleshooting/ # Debugging scenarios and systematic troubleshooting
-├── annotations/    # Metadata for tools and human operators
-├── jobs/           # Batch processing and one-time task execution
-├── cronjobs/       # Scheduled task automation
-├── node-affinity/  # Advanced pod placement control
-├── observability/  # Production monitoring, metrics, logging, tracing
-└── README.md       # This file
+├── README.md                   # This comprehensive guide
+├── START-HERE.yaml            # Quick start example
+├── deployments/               # Application deployment patterns
+├── services/                  # Service discovery and load balancing
+├── statefulsets/              # Stateful applications (databases, message queues)
+├── daemonsets/                # Node-level services (logging, monitoring agents)
+├── pdbs/                      # Pod Disruption Budgets for availability
+├── ingress/                   # HTTP/HTTPS routing and load balancing
+├── health-checks/             # Liveness, readiness, and startup probes
+├── configmaps-secrets/        # Configuration and secrets management
+├── autoscaling/               # Horizontal and Vertical Pod Autoscaler
+│   ├── hpa/                   # Horizontal Pod Autoscaler examples
+│   ├── vpa/                   # Vertical Pod Autoscaler examples
+│   └── SIMPLE-AUTOSCALING.yaml
+├── storage/                   # Persistent storage solutions
+│   ├── pv/                    # Persistent Volumes
+│   ├── pvc/                   # Persistent Volume Claims
+│   ├── storageclass/          # Storage Classes and provisioning
+│   └── SIMPLE-STORAGE.yaml
+├── rbac/                      # Security and access control
+├── scheduling/                # Advanced pod placement and node selection
+├── taints-tolerations/        # Node taints and pod tolerations
+├── node-affinity/             # Node affinity and anti-affinity rules
+├── network-policies/          # Zero-trust networking and microsegmentation
+├── pod-security-standards/    # Pod security policies and standards
+├── secrets-management/        # External secrets integration (Vault, AWS Secrets Manager)
+├── resource-quotas/           # Resource management and cost control
+├── jobs/                      # Batch processing and one-time tasks
+├── cronjobs/                  # Scheduled task automation
+├── labels-selectors/          # Resource organization and selection
+├── namespaces/                # Multi-tenancy and resource isolation
+├── annotations/               # Metadata for tools and automation
+├── sidecar-init-containers/   # Container patterns and service mesh
+├── deployment-strategies/     # Advanced deployment patterns
+│   ├── rolling-updates/       # Zero-downtime deployments
+│   ├── blue-green/           # Blue-green deployment strategy
+│   ├── canary/               # Canary releases and progressive delivery
+│   ├── ab-testing/           # A/B testing deployment patterns
+│   └── feature-flags/        # Feature flag integration
+├── kubernetes-api/            # Direct API access and automation
+├── troubleshooting/           # Production debugging and incident response
+├── observability/             # Complete observability stack
+│   ├── logging/              # Centralized logging (ELK, Loki)
+│   ├── monitoring/           # Metrics and alerting (Prometheus, Grafana)
+│   ├── tracing/              # Distributed tracing (Jaeger)
+│   ├── opentelemetry/        # Unified observability standard
+│   └── commercial-comparison/ # Vendor analysis (Datadog, New Relic, etc.)
+└── autoscaling-archive/       # Legacy autoscaling examples
 ```
 
 ## Core Concepts: First Principles
@@ -96,6 +124,10 @@ k8s-examples/
 **15. How do I control exactly where my pods run?** → **Node Affinity**
 - Problem: Need specific hardware, compliance, or performance requirements
 - Solution: Node affinity provides precise control over pod placement
+
+**16. How do I automate Kubernetes operations programmatically?** → **Kubernetes API**
+- Problem: Manual kubectl operations don't scale, need automation and custom tooling
+- Solution: Direct API access enables automation, operators, and platform engineering
 
 ### The 90/10 Rule: Enterprise Production Reality
 
@@ -206,12 +238,17 @@ kubectl apply -f node-affinity/SIMPLE-NODE-AFFINITY.yaml
 kubectl apply -f observability/
 ```
 
+### 17. Automate with Kubernetes API
+```bash
+kubectl apply -f kubernetes-api/SIMPLE-KUBERNETES-API.yaml
+```
+
 ## The Pattern: Build Up Gradually
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
 **Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling → Add Autoscaling → Add Storage → Add Resource Quotas  
-**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity (essential for production)
+**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation (essential for production)
 
 Each level solves a specific problem. Don't skip ahead.
 
