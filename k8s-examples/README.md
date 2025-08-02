@@ -61,6 +61,7 @@ k8s-examples/
 ├── service-mesh/             # Service mesh for microservices communication
 │   ├── linkerd/              # Lightweight, Rust-based service mesh
 │   └── istio/                # Feature-rich, Envoy-based service mesh
+├── security/                 # Production security hardening and threat mitigation
 ├── architecture/             # Deep Kubernetes architecture understanding
 └── aws-eks/                  # Production Kubernetes on AWS EKS
 ```
@@ -141,7 +142,11 @@ k8s-examples/
 - Problem: Kubernetes seems magical when things work, impossible when they break
 - Solution: Deep understanding of components, data flows, and failure patterns
 
-**19. How do I run Kubernetes in production on AWS?** → **AWS EKS**
+**19. How do I secure my Kubernetes cluster against real attacks?** → **Security Hardening**
+- Problem: Kubernetes adds attack surface with containers, networking, and cloud access
+- Solution: Layered security approach with secure defaults, monitoring, and zero-trust principles
+
+**20. How do I run Kubernetes in production on AWS?** → **AWS EKS**
 - Problem: Vanilla Kubernetes requires managing infrastructure, networking, and AWS integration
 - Solution: EKS provides managed Kubernetes with deep AWS service integration patterns
 
@@ -277,6 +282,15 @@ cat architecture/README.md
 # No kubectl commands - this is knowledge building
 ```
 
+### 19. Secure Your Cluster
+```bash
+# Read comprehensive security guide
+cat security/README.md
+
+# Essential for production security
+# Based on real attack patterns and defenses
+```
+
 ### 20. Deploy on AWS EKS
 ```bash
 # Read AWS EKS production guide
@@ -291,7 +305,7 @@ cat aws-eks/README.md
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
 **Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling → Add Autoscaling → Add Storage → Add Resource Quotas  
-**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation → Add Service Mesh → Understand Architecture → AWS EKS (essential for production)
+**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation → Add Service Mesh → Harden Security → Understand Architecture → AWS EKS (essential for production)
 
 Each level solves a specific problem. Don't skip ahead.
 
@@ -430,7 +444,7 @@ kubectl delete -f jobs/
 kubectl delete -f cronjobs/
 kubectl delete -f node-affinity/
 kubectl delete -f service-mesh/
-# architecture/ and aws-eks/ are documentation only - no resources to delete
+# security/, architecture/, and aws-eks/ are documentation only - no resources to delete
 ```
 
 ## Notes
