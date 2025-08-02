@@ -1,0 +1,234 @@
+# WARNING: EXTREMELY DANGEROUS - EDUCATIONAL PURPOSES ONLY
+# This configuration demonstrates critical DIND vulnerabilities
+# NEVER deploy this in any real environment
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vulnerable-dind
+  labels:
+    security-demo: "dangerous"
+    purpose: "education-only"
+---
+# Vulnerable Docker-in-Docker CI/CD setup
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vulnerable-dind-builder
+  namespace: vulnerable-dind
+  labels:
+    app: dangerous-builder
+    vulnerability: "dind-socket-exposure"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dangerous-builder
+  template:
+    metadata:
+      labels:
+        app: dangerous-builder
+    spec:
+      # VULNERABILITY: Uses default service account with potential cluster access
+      containers:
+      - name: docker-dind
+        image: docker:20.10-dind
+        securityContext:
+          privileged: true  # ❌ CRITICAL: Full privileged access
+        ports:
+        - containerPort: 2376
+          name: docker-daemon
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""  # Disable TLS for easier exploitation demo
+        - name: DOCKER_DRIVER
+          value: overlay2
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /var/run/docker.sock  # ❌ CRITICAL: Docker socket access
+        - name: host-root
+          mountPath: /host  # ❌ CRITICAL: Host filesystem access
+        - name: docker-lib
+          mountPath: /var/lib/docker
+        - name: host-proc
+          mountPath: /host/proc  # ❌ CRITICAL: Host process access
+        - name: host-sys
+          mountPath: /host/sys  # ❌ CRITICAL: Host system access
+        command: ["dockerd-entrypoint.sh"]
+        # VULNERABILITY: No resource limits = potential DoS
+        # VULNERABILITY: No health checks = harder to detect compromise
+      - name: build-runner
+        image: alpine:latest
+        command: ["/bin/sh"]
+        args: ["-c", "apk add --no-cache docker-cli curl bash && sleep infinity"]
+        env:
+        - name: DOCKER_HOST
+          value: unix:///var/run/docker.sock
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+        - name: host-root
+          mountPath: /host
+        # VULNERABILITY: Running as root
+        # VULNERABILITY: No security context restrictions
+      volumes:
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock  # ❌ Exposes Docker daemon control
+          type: Socket
+      - name: host-root
+        hostPath:
+          path: /  # ❌ Exposes entire host filesystem
+          type: Directory
+      - name: docker-lib
+        hostPath:
+          path: /var/lib/docker
+          type: DirectoryOrCreate
+      - name: host-proc
+        hostPath:
+          path: /proc  # ❌ Exposes host processes
+          type: Directory
+      - name: host-sys
+        hostPath:
+          path: /sys  # ❌ Exposes host system information
+          type: Directory
+      # VULNERABILITY: No network policies = unrestricted network access
+      # VULNERABILITY: No pod security context
+      hostNetwork: true  # ❌ CRITICAL: Uses host network namespace
+      hostPID: true      # ❌ CRITICAL: Can see all host processes
+      hostIPC: true      # ❌ CRITICAL: Can access host IPC
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vulnerable-dind-service
+  namespace: vulnerable-dind
+spec:
+  selector:
+    app: dangerous-builder
+  ports:
+  - port: 2376
+    targetPort: 2376
+    name: docker-api
+  type: ClusterIP
+---
+# Simulated "legitimate" application that will be compromised
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: target-app
+  namespace: vulnerable-dind
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: target-app
+  template:
+    metadata:
+      labels:
+        app: target-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: SECRET_TOKEN
+          value: "super-secret-production-token-12345"
+        - name: DATABASE_PASSWORD
+          value: "production-db-password"
+        volumeMounts:
+        - name: app-secrets
+          mountPath: /etc/secrets
+          readOnly: true
+      volumes:
+      - name: app-secrets
+        secret:
+          secretName: app-production-secrets
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-production-secrets
+  namespace: vulnerable-dind
+type: Opaque
+data:
+  # Base64 encoded secrets that will be exposed
+  api-key: c3VwZXItc2VjcmV0LWFwaS1rZXktMTIzNDU=  # super-secret-api-key-12345
+  db-password: cHJvZHVjdGlvbi1kYi1wYXNzd29yZA==      # production-db-password
+  admin-token: YWRtaW4tdG9rZW4tZm9yLXByb2R1Y3Rpb24=   # admin-token-for-production
+---
+# Service account with overly broad permissions (common mistake)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: build-sa
+  namespace: vulnerable-dind
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dangerous-builder-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "secrets", "configmaps"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+# VULNERABILITY: Overly broad permissions for a build service
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dangerous-builder-binding
+subjects:
+- kind: ServiceAccount
+  name: build-sa
+  namespace: vulnerable-dind
+roleRef:
+  kind: ClusterRole
+  name: dangerous-builder-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Update the deployment to use the service account
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vulnerable-dind-builder-sa
+  namespace: vulnerable-dind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dangerous-builder-sa
+  template:
+    metadata:
+      labels:
+        app: dangerous-builder-sa
+    spec:
+      serviceAccountName: build-sa  # Uses overprivileged service account
+      containers:
+      - name: docker-dind
+        image: docker:20.10-dind
+        securityContext:
+          privileged: true
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+        - name: host-root
+          mountPath: /host
+        command: ["dockerd-entrypoint.sh"]
+      volumes:
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+      - name: host-root
+        hostPath:
+          path: /
+          type: Directory
