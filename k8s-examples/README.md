@@ -61,7 +61,8 @@ k8s-examples/
 ├── service-mesh/             # Service mesh for microservices communication
 │   ├── linkerd/              # Lightweight, Rust-based service mesh
 │   └── istio/                # Feature-rich, Envoy-based service mesh
-└── architecture/             # Deep Kubernetes architecture understanding
+├── architecture/             # Deep Kubernetes architecture understanding
+└── aws-eks/                  # Production Kubernetes on AWS EKS
 ```
 
 ## Core Concepts: First Principles
@@ -139,6 +140,10 @@ k8s-examples/
 **18. How does Kubernetes actually work under the hood?** → **Architecture Deep Dive**
 - Problem: Kubernetes seems magical when things work, impossible when they break
 - Solution: Deep understanding of components, data flows, and failure patterns
+
+**19. How do I run Kubernetes in production on AWS?** → **AWS EKS**
+- Problem: Vanilla Kubernetes requires managing infrastructure, networking, and AWS integration
+- Solution: EKS provides managed Kubernetes with deep AWS service integration patterns
 
 ### The 90/10 Rule: Enterprise Production Reality
 
@@ -272,12 +277,21 @@ cat architecture/README.md
 # No kubectl commands - this is knowledge building
 ```
 
+### 20. Deploy on AWS EKS
+```bash
+# Read AWS EKS production guide
+cat aws-eks/README.md
+
+# Focus on AWS-specific patterns and integrations
+# Essential for production AWS deployments
+```
+
 ## The Pattern: Build Up Gradually
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
 **Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling → Add Autoscaling → Add Storage → Add Resource Quotas  
-**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation → Add Service Mesh → Understand Architecture (essential for senior roles)
+**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation → Add Service Mesh → Understand Architecture → AWS EKS (essential for production)
 
 Each level solves a specific problem. Don't skip ahead.
 
@@ -416,7 +430,7 @@ kubectl delete -f jobs/
 kubectl delete -f cronjobs/
 kubectl delete -f node-affinity/
 kubectl delete -f service-mesh/
-# architecture/ is documentation only - no resources to delete
+# architecture/ and aws-eks/ are documentation only - no resources to delete
 ```
 
 ## Notes
