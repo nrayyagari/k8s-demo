@@ -1,0 +1,130 @@
+# Simple Linkerd Service Mesh Setup
+# Purpose: Get started with Linkerd service mesh in 5 minutes
+# Use case: Enable automatic mTLS and observability for microservices
+
+---
+# Demo Application: Simple web service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: default
+  labels:
+    app: demo-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-app
+  template:
+    metadata:
+      labels:
+        app: demo-app
+    spec:
+      containers:
+      - name: demo-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+# Service for demo application
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-service
+  namespace: default
+spec:
+  selector:
+    app: demo-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Client pod to test service-to-service communication
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-app
+  namespace: default
+  labels:
+    app: client-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client-app
+  template:
+    metadata:
+      labels:
+        app: client-app
+    spec:
+      containers:
+      - name: client
+        image: curlimages/curl:7.85.0
+        command: ['sleep', '3600']
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Instructions for getting started:
+# 
+# 1. Install Linkerd CLI:
+#    curl -sL https://run.linkerd.io/install | sh
+#    export PATH=$PATH:$HOME/.linkerd2/bin
+#
+# 2. Verify cluster compatibility:
+#    linkerd check --pre
+#
+# 3. Install Linkerd control plane:
+#    linkerd install | kubectl apply -f -
+#    linkerd check
+#
+# 4. Install visualization dashboard:
+#    linkerd viz install | kubectl apply -f -
+#    linkerd viz check
+#
+# 5. Deploy this demo application:
+#    kubectl apply -f SIMPLE-LINKERD.yaml
+#
+# 6. Inject Linkerd proxy into deployments:
+#    kubectl get deploy -o yaml | linkerd inject - | kubectl apply -f -
+#
+# 7. Verify mTLS is working:
+#    linkerd viz stat deployments
+#    # Look for 🔒 symbol indicating mTLS
+#
+# 8. Test service communication:
+#    kubectl exec deploy/client-app -- curl demo-app-service
+#
+# 9. View traffic in real-time:
+#    linkerd viz tap deploy/demo-app
+#
+# 10. Access dashboard (optional):
+#     linkerd viz dashboard
+#     # Opens browser to http://localhost:50750
+#
+# Key Benefits Demonstrated:
+# - Automatic mTLS between services (zero configuration)
+# - Rich observability (success rates, latency, throughput)
+# - Zero code changes required
+# - Minimal resource overhead
+#
+# Clean up:
+# kubectl delete -f SIMPLE-LINKERD.yaml
+# linkerd viz uninstall | kubectl delete -f -
+# linkerd uninstall | kubectl delete -f -

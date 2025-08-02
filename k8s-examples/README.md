@@ -58,6 +58,9 @@ k8s-examples/
 │   ├── tracing/              # Distributed tracing (Jaeger)
 │   ├── opentelemetry/        # Unified observability standard
 │   └── commercial-comparison/ # Vendor analysis (Datadog, New Relic, etc.)
+├── service-mesh/             # Service mesh for microservices communication
+│   ├── linkerd/              # Lightweight, Rust-based service mesh
+│   └── istio/                # Feature-rich, Envoy-based service mesh
 └── autoscaling-archive/       # Legacy autoscaling examples
 ```
 
@@ -128,6 +131,10 @@ k8s-examples/
 **16. How do I automate Kubernetes operations programmatically?** → **Kubernetes API**
 - Problem: Manual kubectl operations don't scale, need automation and custom tooling
 - Solution: Direct API access enables automation, operators, and platform engineering
+
+**17. How do I secure and manage service-to-service communication at scale?** → **Service Mesh (Linkerd/Istio)**
+- Problem: Microservices need secure, observable, and resilient communication
+- Solution: Infrastructure layer providing mTLS, traffic management, and observability
 
 ### The 90/10 Rule: Enterprise Production Reality
 
@@ -243,12 +250,21 @@ kubectl apply -f observability/
 kubectl apply -f kubernetes-api/SIMPLE-KUBERNETES-API.yaml
 ```
 
+### 18. Enable Service Mesh for Advanced Microservices
+```bash
+# For simplicity and performance
+kubectl apply -f service-mesh/linkerd/SIMPLE-LINKERD.yaml
+
+# For enterprise features and control
+kubectl apply -f service-mesh/istio/SIMPLE-ISTIO.yaml
+```
+
 ## The Pattern: Build Up Gradually
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
 **Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling → Add Autoscaling → Add Storage → Add Resource Quotas  
-**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation (essential for production)
+**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation → Add Service Mesh (essential for production microservices)
 
 Each level solves a specific problem. Don't skip ahead.
 
@@ -386,6 +402,7 @@ kubectl delete -f annotations/
 kubectl delete -f jobs/
 kubectl delete -f cronjobs/
 kubectl delete -f node-affinity/
+kubectl delete -f service-mesh/
 ```
 
 ## Notes

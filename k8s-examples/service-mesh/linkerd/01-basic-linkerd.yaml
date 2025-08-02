@@ -1,0 +1,266 @@
+# Basic Linkerd Service Mesh Setup
+# Purpose: Production-ready Linkerd deployment with basic configuration
+# Use case: Enable service mesh for existing microservices
+
+---
+# Namespace for demo application
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: linkerd-demo
+  annotations:
+    # Enable automatic Linkerd injection for all pods in this namespace
+    linkerd.io/inject: enabled
+    # Optional: Configure proxy resources at namespace level
+    config.linkerd.io/proxy-cpu-request: "10m"
+    config.linkerd.io/proxy-memory-request: "20Mi"
+
+---
+# Backend Service - User Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: linkerd-demo
+  labels:
+    app: user-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+      annotations:
+        # Custom proxy configuration for this deployment
+        config.linkerd.io/proxy-cpu-limit: "200m"
+        config.linkerd.io/proxy-memory-limit: "128Mi"
+    spec:
+      containers:
+      - name: user-service
+        image: httpd:2.4
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Frontend Service - Web Application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-frontend
+  namespace: linkerd-demo
+  labels:
+    app: web-frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-frontend
+  template:
+    metadata:
+      labels:
+        app: web-frontend
+    spec:
+      containers:
+      - name: web-frontend
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+        # Custom nginx config that calls user-service
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: nginx.conf
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-frontend-config
+
+---
+# ConfigMap for nginx frontend configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-frontend-config
+  namespace: linkerd-demo
+data:
+  nginx.conf: |
+    server {
+        listen 80;
+        server_name localhost;
+        
+        location / {
+            root /usr/share/nginx/html;
+            index index.html;
+        }
+        
+        # Proxy to user service - demonstrates service-to-service communication
+        location /api/users {
+            proxy_pass http://user-service/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+        
+        # Health check endpoint
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+    }
+
+---
+# Service for user-service
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: linkerd-demo
+  labels:
+    app: user-service
+  annotations:
+    # Linkerd service configuration
+    balancer.linkerd.io/algorithm: "round_robin"
+    retry.linkerd.io/budget: "0.2"
+    retry.linkerd.io/response-statuses: "5xx"
+spec:
+  selector:
+    app: user-service
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Service for web-frontend
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-frontend
+  namespace: linkerd-demo
+  labels:
+    app: web-frontend
+  annotations:
+    # Load balancing configuration
+    balancer.linkerd.io/algorithm: "least_request"
+spec:
+  selector:
+    app: web-frontend
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Ingress for external access (optional)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-frontend-ingress
+  namespace: linkerd-demo
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Linkerd ingress annotations
+    nginx.ingress.kubernetes.io/service-upstream: "true"
+spec:
+  rules:
+  - host: frontend.linkerd.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-frontend
+            port:
+              number: 80
+
+---
+# Instructions:
+# 
+# 1. Ensure Linkerd is installed:
+#    linkerd check
+#
+# 2. Deploy this configuration:
+#    kubectl apply -f 01-basic-linkerd.yaml
+#
+# 3. Verify injection worked:
+#    kubectl get pods -n linkerd-demo
+#    # Each pod should have 2/2 containers (app + linkerd-proxy)
+#
+# 4. Check service mesh metrics:
+#    linkerd viz stat deployments -n linkerd-demo
+#
+# 5. View real-time traffic:
+#    linkerd viz tap deployment/web-frontend -n linkerd-demo
+#
+# 6. Test service communication:
+#    kubectl exec -n linkerd-demo deploy/web-frontend -- curl user-service/
+#
+# 7. Generate traffic to see mesh in action:
+#    kubectl run traffic-generator --image=curlimages/curl:7.85.0 --rm -it -- sh
+#    # Inside the pod:
+#    while true; do curl http://web-frontend.linkerd-demo/api/users; sleep 1; done
+#
+# 8. View service topology:
+#    linkerd viz dashboard
+#    # Navigate to the linkerd-demo namespace
+#
+# Key Features Demonstrated:
+# - Automatic mTLS between services
+# - Traffic metrics and observability
+# - Load balancing configuration
+# - Retry policies
+# - Health checks integration
+# - Service-to-service communication through proxy
+#
+# Clean up:
+# kubectl delete namespace linkerd-demo

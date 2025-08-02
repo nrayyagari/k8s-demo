@@ -1,0 +1,335 @@
+# Simple Istio Service Mesh Setup
+# Purpose: Get started with Istio service mesh and see advanced features
+# Use case: Traffic management, security, and observability for microservices
+
+---
+# Namespace with automatic Istio injection
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-demo
+  labels:
+    istio-injection: enabled
+
+---
+# Demo Application - Version 1 (Blue)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app-v1
+  namespace: istio-demo
+  labels:
+    app: demo-app
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-app
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        version: v1
+    spec:
+      containers:
+      - name: demo-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        # Custom nginx config to show version
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: demo-app-v1-config
+
+---
+# Demo Application - Version 2 (Green) 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app-v2
+  namespace: istio-demo
+  labels:
+    app: demo-app
+    version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-app
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        version: v2
+    spec:
+      containers:
+      - name: demo-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: demo-app-v2-config
+
+---
+# ConfigMap for V1 (Blue)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-app-v1-config
+  namespace: istio-demo
+data:
+  index.html: |
+    <html>
+    <head><title>Demo App V1</title></head>
+    <body style="background-color: lightblue;">
+      <h1>Demo Application - Version 1 (Blue)</h1>
+      <p>This is the stable version running through Istio service mesh.</p>
+      <p>Features: mTLS, Traffic Management, Observability</p>
+    </body>
+    </html>
+
+---
+# ConfigMap for V2 (Green)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-app-v2-config
+  namespace: istio-demo
+data:
+  index.html: |
+    <html>
+    <head><title>Demo App V2</title></head>
+    <body style="background-color: lightgreen;">
+      <h1>Demo Application - Version 2 (Green)</h1>
+      <p>This is the canary version with new features!</p>
+      <p>Enhanced: Better performance, new features, A/B testing</p>
+    </body>
+    </html>
+
+---
+# Service for demo application
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-service
+  namespace: istio-demo
+  labels:
+    app: demo-app
+spec:
+  selector:
+    app: demo-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Istio Gateway for external access
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: demo-app-gateway
+  namespace: istio-demo
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - demo-app.local
+
+---
+# VirtualService for traffic routing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: demo-app-routes
+  namespace: istio-demo
+spec:
+  hosts:
+  - demo-app.local
+  gateways:
+  - demo-app-gateway
+  http:
+  # Canary deployment: 90% v1, 10% v2
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: demo-app-service
+        subset: v1
+      weight: 90
+    - destination:
+        host: demo-app-service
+        subset: v2
+      weight: 10
+    # Add delay for demonstration
+    fault:
+      delay:
+        percentage:
+          value: 5  # 5% of requests
+        fixedDelay: 2s
+
+---
+# DestinationRule for traffic policies
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: demo-app-destination
+  namespace: istio-demo
+spec:
+  host: demo-app-service
+  trafficPolicy:
+    # Load balancing
+    loadBalancer:
+      simple: ROUND_ROBIN
+    # Connection pooling
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 2
+    # Circuit breaker
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+  # Define subsets for canary deployment
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+
+---
+# Client pod for testing
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-app
+  namespace: istio-demo
+  labels:
+    app: client-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client-app
+  template:
+    metadata:
+      labels:
+        app: client-app
+    spec:
+      containers:
+      - name: client
+        image: curlimages/curl:7.85.0
+        command: ['sleep', '3600']
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+
+---
+# Instructions for getting started:
+# 
+# 1. Install Istio:
+#    curl -L https://istio.io/downloadIstio | sh -
+#    cd istio-*
+#    export PATH=$PWD/bin:$PATH
+#    istioctl install --set values.demo=true -y
+#
+# 2. Verify installation:
+#    istioctl verify-install
+#
+# 3. Install observability addons:
+#    kubectl apply -f samples/addons/prometheus.yaml
+#    kubectl apply -f samples/addons/grafana.yaml
+#    kubectl apply -f samples/addons/jaeger.yaml
+#    kubectl apply -f samples/addons/kiali.yaml
+#
+# 4. Deploy this demo application:
+#    kubectl apply -f SIMPLE-ISTIO.yaml
+#
+# 5. Get ingress gateway external IP:
+#    kubectl get service istio-ingressgateway -n istio-system
+#
+# 6. Test the application (replace EXTERNAL-IP):
+#    curl -H "Host: demo-app.local" http://EXTERNAL-IP/
+#    # Run multiple times to see traffic splitting between v1 and v2
+#
+# 7. Test internal service communication:
+#    kubectl exec -n istio-demo deploy/client-app -- curl demo-app-service
+#
+# 8. Access Kiali dashboard for service topology:
+#    istioctl dashboard kiali
+#    # Username: admin, Password: admin
+#
+# 9. Access Grafana for metrics:
+#    istioctl dashboard grafana
+#
+# 10. Access Jaeger for distributed tracing:
+#     istioctl dashboard jaeger
+#
+# Advanced Features Demonstrated:
+# - Automatic sidecar injection with Envoy proxy
+# - Traffic splitting for canary deployments (90/10 split)
+# - Circuit breaker and connection pooling
+# - Fault injection for chaos testing
+# - mTLS automatic encryption between services
+# - Rich observability with metrics, logs, and traces
+# - Gateway for external traffic management
+#
+# Observability Commands:
+# - Check proxy status: istioctl proxy-status
+# - View proxy configuration: istioctl proxy-config cluster <pod-name>
+# - Real-time traffic: istioctl dashboard kiali
+# - Generate traffic: for i in {1..100}; do curl -H "Host: demo-app.local" http://EXTERNAL-IP/ -s -o /dev/null; done
+#
+# Security Features:
+# - Automatic mTLS between all services
+# - Traffic encryption without code changes
+# - Authorization policies (can be added)
+# - JWT validation (can be configured)
+#
+# Clean up:
+# kubectl delete namespace istio-demo
+# istioctl uninstall --purge -y
