@@ -61,6 +61,7 @@ k8s-examples/
 ├── service-mesh/             # Service mesh for microservices communication
 │   ├── linkerd/              # Lightweight, Rust-based service mesh
 │   └── istio/                # Feature-rich, Envoy-based service mesh
+├── architecture/             # Deep Kubernetes architecture understanding
 └── autoscaling-archive/       # Legacy autoscaling examples
 ```
 
@@ -135,6 +136,10 @@ k8s-examples/
 **17. How do I secure and manage service-to-service communication at scale?** → **Service Mesh (Linkerd/Istio)**
 - Problem: Microservices need secure, observable, and resilient communication
 - Solution: Infrastructure layer providing mTLS, traffic management, and observability
+
+**18. How does Kubernetes actually work under the hood?** → **Architecture Deep Dive**
+- Problem: Kubernetes seems magical when things work, impossible when they break
+- Solution: Deep understanding of components, data flows, and failure patterns
 
 ### The 90/10 Rule: Enterprise Production Reality
 
@@ -259,12 +264,21 @@ kubectl apply -f service-mesh/linkerd/SIMPLE-LINKERD.yaml
 kubectl apply -f service-mesh/istio/SIMPLE-ISTIO.yaml
 ```
 
+### 19. Understand Kubernetes Architecture
+```bash
+# Read comprehensive architecture guide
+cat architecture/README.md
+
+# Essential for troubleshooting and system design
+# No kubectl commands - this is knowledge building
+```
+
 ## The Pattern: Build Up Gradually
 
 **Level 1**: Pod → Deployment → Service  
 **Level 2**: Add Health Probes → Add Ingress  
 **Level 3**: Add StatefulSets (when needed) → Add RBAC → Add Scheduling → Add Autoscaling → Add Storage → Add Resource Quotas  
-**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation → Add Service Mesh (essential for production microservices)
+**Level 4**: Master Troubleshooting → Add Annotations → Add Jobs/CronJobs → Add Node Affinity → Add API Automation → Add Service Mesh → Understand Architecture (essential for senior roles)
 
 Each level solves a specific problem. Don't skip ahead.
 
@@ -403,6 +417,7 @@ kubectl delete -f jobs/
 kubectl delete -f cronjobs/
 kubectl delete -f node-affinity/
 kubectl delete -f service-mesh/
+# architecture/ is documentation only - no resources to delete
 ```
 
 ## Notes
