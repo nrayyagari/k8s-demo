@@ -1,9 +1,37 @@
-# Observability: Production-Ready Monitoring & Alerting
+# Observability: Production-Ready Monitoring, Logging & Tracing
 
 ## WHY Observability Matters in Production
 
 **Problem**: "My app works on my machine" doesn't scale to distributed systems  
 **Solution**: Built-in observability provides visibility into system behavior and early problem detection
+
+## Directory Structure
+
+```
+observability/
+├── README.md                    # This comprehensive guide
+├── logging/                     # Log aggregation and analysis
+│   ├── README.md               # ELK stack, Fluentd, Loki guides
+│   ├── elk-stack.yaml          # Complete ELK deployment
+│   ├── fluentd-daemonset.yaml  # Log collection
+│   └── loki-stack.yaml         # Grafana Loki alternative
+├── monitoring/                  # Metrics collection and alerting
+│   ├── README.md               # Prometheus, Grafana, AlertManager
+│   ├── prometheus-stack.yaml   # Complete monitoring stack
+│   ├── grafana-dashboards.yaml # Pre-built dashboards
+│   └── alerting-rules.yaml     # Production alert rules
+├── tracing/                     # Distributed tracing
+│   ├── README.md               # Jaeger, Zipkin implementation
+│   ├── jaeger-stack.yaml       # Complete tracing deployment
+│   └── sample-app-tracing.yaml # Instrumented demo app
+├── opentelemetry/              # Unified observability
+│   ├── README.md               # OTEL collector and instrumentation
+│   ├── otel-collector.yaml     # Production OTEL setup
+│   └── auto-instrumentation.yaml # Zero-code instrumentation
+└── commercial-comparison/       # Vendor analysis
+    ├── README.md               # Datadog, New Relic, Dynatrace
+    └── cost-analysis.yaml      # ROI calculations
+```
 
 ## The Three Pillars: First Principles Analysis
 
