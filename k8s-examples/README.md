@@ -61,8 +61,7 @@ k8s-examples/
 ├── service-mesh/             # Service mesh for microservices communication
 │   ├── linkerd/              # Lightweight, Rust-based service mesh
 │   └── istio/                # Feature-rich, Envoy-based service mesh
-├── architecture/             # Deep Kubernetes architecture understanding
-└── autoscaling-archive/       # Legacy autoscaling examples
+└── architecture/             # Deep Kubernetes architecture understanding
 ```
 
 ## Core Concepts: First Principles
