@@ -29,6 +29,7 @@ k8s-examples/
 ├── jobs/           # Batch processing and one-time task execution
 ├── cronjobs/       # Scheduled task automation
 ├── node-affinity/  # Advanced pod placement control
+├── observability/  # Production monitoring, metrics, logging, tracing
 └── README.md       # This file
 ```
 
@@ -96,13 +97,31 @@ k8s-examples/
 - Problem: Need specific hardware, compliance, or performance requirements
 - Solution: Node affinity provides precise control over pod placement
 
-### The 90/10 Rule
+### The 90/10 Rule: Enterprise Production Reality
 
 **90% of workloads**: Stateless web apps
-- Use: Deployment + Service + Ingress + Health Probes + Autoscaling (HPA) + Resource Quotas
+- **Pattern**: Deployment + Service + Ingress + Health Probes + HPA + Resource Quotas + NetworkPolicies
+- **Why this works**: Horizontal scaling, self-healing, cloud-native design
+- **Business Value**: High availability, cost efficiency, rapid iteration
+- **When it fails**: Session state, file uploads, legacy applications
 
 **10% of workloads**: Stateful systems  
-- Use: StatefulSet + Headless Service + Health Probes + Autoscaling (VPA) + Storage + Resource Quotas
+- **Pattern**: StatefulSet + Headless Service + Health Probes + VPA + Storage + RBAC + Pod Security
+- **Why different**: Persistent identity, ordered deployment, data consistency requirements
+- **Business Value**: Data integrity, performance optimization, compliance
+- **When it fails**: Distributed systems complexity, backup/recovery challenges
+
+### **Critical Analysis: Why Most Kubernetes Deployments Fail**
+
+**Common Failure Patterns**:
+1. **Resource Limits**: 60% of outages - no requests/limits set
+2. **Health Checks**: 25% of issues - missing or wrong probes  
+3. **Security**: 15% of breaches - overprivileged ServiceAccounts
+
+**Evolution Context**: How these patterns emerged from:
+- **VM Era**: Manual resource allocation → Kubernetes automation
+- **Container Era**: Docker run → Kubernetes orchestration  
+- **Cloud Era**: Pet servers → Cattle workloads
 
 ## Learning Path: Start Here
 
@@ -180,6 +199,11 @@ kubectl apply -f cronjobs/SIMPLE-CRONJOBS.yaml
 ### 15. Control Pod Placement
 ```bash
 kubectl apply -f node-affinity/SIMPLE-NODE-AFFINITY.yaml
+```
+
+### 16. Monitor and Observe Your System
+```bash
+kubectl apply -f observability/
 ```
 
 ## The Pattern: Build Up Gradually

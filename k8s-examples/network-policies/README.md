@@ -1,15 +1,47 @@
-# Network Policies: Pod-to-Pod Communication Control
+# Network Policies: Zero-Trust Pod Security
 
-## WHY Network Policies Exist
+## WHY Network Policies Are Critical for Production
 
 **Problem**: By default, all pods can communicate with all other pods - zero network isolation  
-**Solution**: Fine-grained network traffic control using firewall rules for pods
+**Solution**: Fine-grained network traffic control implementing zero-trust networking
 
-## The Fundamental Question
+## **Real-World Security Incident: The Kubernetes Lateral Movement Attack**
 
-**How do I control WHICH pods can talk to WHICH other pods?**
+**What Happened**: Attacker compromised a frontend pod, moved laterally to database pods, exfiltrated customer data  
+**Business Impact**: $2M fine, customer trust loss, regulatory investigation  
+**Root Cause**: No network segmentation - compromised pod could access everything  
+**Prevention**: Network policies implementing microsegmentation
 
-Answer: Network Policies define ingress/egress rules based on pod selectors, namespaces, and IP blocks
+### **The Security Evolution: From Perimeter to Zero-Trust**
+- **Traditional (Firewall Era)**: Perimeter security, trusted internal network
+- **Cloud (2010s)**: Security groups, subnet-level isolation
+- **Container (2015+)**: Pod-level firewalls with Kubernetes Network Policies
+- **Zero-Trust (Now)**: No implicit trust, verify every connection
+
+## The Fundamental Questions
+
+**Primary**: "How do I control WHICH pods can talk to WHICH other pods?"  
+**Security**: "What happens when a pod gets compromised?"  
+**Compliance**: "How do I prove network isolation for audit?"
+
+**Answer**: Network Policies define ingress/egress rules based on pod selectors, namespaces, and IP blocks
+
+## **Production Security Scenarios**
+
+### **Scenario 1: Multi-Tenant SaaS Platform**
+**Business Context**: Different customers must be completely isolated  
+**Compliance**: SOC2, GDPR data isolation requirements  
+**Implementation**: Namespace per tenant + strict network policies
+
+### **Scenario 2: PCI DSS Compliance**  
+**Business Context**: Payment processing application  
+**Compliance**: Payment data must be network-isolated  
+**Implementation**: Dedicated namespace with locked-down network policies
+
+### **Scenario 3: Defense in Depth**
+**Business Context**: Healthcare application with PHI data  
+**Compliance**: HIPAA compliance requires network controls  
+**Implementation**: Layer network policies with pod security policies
 
 ## Core Concepts: First Principles
 
